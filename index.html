@@ -494,8 +494,8 @@
     return (liab.openingDate||'')<=dateStr ? Number(liab.openingBalance||0) : 0;
   }
   function netWorthAsOf(dateStr){
-    const assets=totalCurrentValueAsOf(dateStr)+state.goals.reduce((s,g)=>s+goalBalanceAsOf(g.id,dateStr),0);
-    const liab=state.liabilities.reduce((s,l)=>s+liabilityBalanceAsOf(l,dateStr),0);
+    const assets=totalCurrentValueAsOf(dateStr) + state.accounts.filter(a=>!acctIsLiability(a)).reduce((s,a)=>s+accountBalanceAsOf(a,dateStr),0);
+    const liab=state.liabilities.reduce((s,l)=>s+liabilityBalanceAsOf(l,dateStr),0) + state.accounts.filter(a=>acctIsLiability(a)).reduce((s,a)=>s+accountBalanceAsOf(a,dateStr),0);
     return assets-liab;
   }
   // ---- real account balance tracking (accounts as ledger accounts, not just labels) ----
@@ -520,12 +520,13 @@
     const transfersIn=state.transfers.filter(t=>t.toAccount===acct.name && t.date>=openDate && t.date<=dateStr).reduce((s,t)=>s+Number(t.amount),0);
     const assetContribOut=state.assetTx.filter(t=>t.kind==='contribution' && t.account===acct.name && t.date>=openDate && t.date<=dateStr).reduce((s,t)=>s+Number(t.amount),0);
     const assetWithdrawIn=state.assetTx.filter(t=>t.kind==='withdrawal' && t.account===acct.name && t.date>=openDate && t.date<=dateStr).reduce((s,t)=>s+Number(t.amount),0);
-    const goalContribOut=state.goalTx.filter(t=>t.type==='contribution' && t.account===acct.name && t.date>=openDate && t.date<=dateStr).reduce((s,t)=>s+Number(t.amount),0);
-    const goalWithdrawIn=state.goalTx.filter(t=>t.type==='withdrawal' && t.account===acct.name && t.date>=openDate && t.date<=dateStr).reduce((s,t)=>s+Number(t.amount),0);
+    // goal contributions/withdrawals are each a real transfer between two accounts: debit fromAccount, credit toAccount, regardless of type
+    const goalAcctOut=state.goalTx.filter(t=>(t.type==='contribution'||t.type==='withdrawal') && t.fromAccount===acct.name && t.date>=openDate && t.date<=dateStr).reduce((s,t)=>s+Number(t.amount),0);
+    const goalAcctIn=state.goalTx.filter(t=>(t.type==='contribution'||t.type==='withdrawal') && t.toAccount===acct.name && t.date>=openDate && t.date<=dateStr).reduce((s,t)=>s+Number(t.amount),0);
     if(acctIsLiability(acct)){
-      bal += expenseOut - transfersIn + transfersOut - incomeIn + assetContribOut - assetWithdrawIn + goalContribOut - goalWithdrawIn;
+      bal += expenseOut - transfersIn + transfersOut - incomeIn + assetContribOut - assetWithdrawIn + goalAcctOut - goalAcctIn;
     } else {
-      bal += incomeIn - expenseOut - transfersOut + transfersIn - assetContribOut + assetWithdrawIn - goalContribOut + goalWithdrawIn;
+      bal += incomeIn - expenseOut - transfersOut + transfersIn - assetContribOut + assetWithdrawIn - goalAcctOut + goalAcctIn;
     }
     return bal;
   }
@@ -659,8 +660,9 @@
 
     addSheet('Goal Activity', state.goalTx.slice().sort(byDate).map(t=>({
       Date:t.date, Goal:goalName(t.goalId), Person:t.person, Type:t.type, 'Amount (₹)':Number(t.amount),
+      'From Account':t.fromAccount||'—', 'To Account':t.toAccount||'—',
       Reason:t.reason||'—', 'Linked Asset':t.toAssetId?assetName(t.toAssetId):'—'
-    })), [12,18,10,14,14,24,18]);
+    })), [12,18,10,14,14,16,16,24,18]);
 
     addSheet('Assets', state.assets.map(a=>({
       Name:a.name, Type:a.type, Owner:a.owner||'Joint', 'Invested (₹)':assetInvested(a.id), 'Current Value (₹)':assetCurrentValue(a.id), 'Gain/Loss (₹)':assetCurrentValue(a.id)-assetInvested(a.id)
@@ -1084,7 +1086,7 @@
           <div class="goal-name">${esc(g.name)}</div>
           <div class="row-actions"><button data-edit-goal="${g.id}">Edit</button><button data-del-goal="${g.id}">Delete goal</button></div>
         </div>
-        <div class="goal-sub">${fmtINR(bal)} saved of ${fmtINR(g.targetAmount)} target · parked in ${esc(g.account||'—')}${monthsLeft!=null?' · ~'+monthsLeft+' more months at current planned pace':''}</div>
+        <div class="goal-sub">${fmtINR(bal)} saved of ${fmtINR(g.targetAmount)} target · default account ${esc(g.account||'—')}${monthsLeft!=null?' · ~'+monthsLeft+' more months at current planned pace':''}</div>
         <div class="progress-track"><div class="progress-fill ${pct>=100?'done':''}" style="width:${pct}%"></div></div>
         <div style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">Planned monthly contribution set in Setup → Allocation plan (currently ${fmtINR(monthlyPlanned)}/mo combined).</div>`;
 
@@ -1095,7 +1097,12 @@
             <div><label>Date</label><input type="date" data-goaltx-date="${g.id}" value="${todayDate()}"></div>
             <div><label>Person</label><select data-goaltx-person="${g.id}">${state.people.map(p=>`<option value="${esc(p)}">${esc(p)}</option>`).join('')}</select></div>
             <div><label>Type</label><select data-goaltx-type="${g.id}"><option value="contribution">Contribution</option><option value="withdrawal">Withdrawal</option><option value="transfer">Transfer to asset</option></select></div>
-            <div class="goaltx-account-field" data-goaltx-accountfield="${g.id}"><label data-goaltx-accountlabel="${g.id}">Paid from account</label><select data-goaltx-account="${g.id}">${acctOpts}</select></div>
+            <div class="goaltx-account-field" data-goaltx-accountfield="${g.id}">
+              <label>From account</label><select data-goaltx-fromaccount="${g.id}">${acctOpts}</select>
+            </div>
+            <div class="goaltx-account-field" data-goaltx-accountfield="${g.id}">
+              <label>To account</label><select data-goaltx-toaccount="${g.id}">${state.accounts.map(a=>`<option value="${esc(a.name)}" ${a.name===g.account?'selected':''}>${esc(a.name)}</option>`).join('')}</select>
+            </div>
             <div class="goaltx-asset-field" data-goaltx-assetfield="${g.id}" style="display:none;"><label>Destination asset</label><select data-goaltx-asset="${g.id}">${assetOpts}</select></div>
             <div><label>Amount</label><input type="number" min="0" data-goaltx-amount="${g.id}"></div>
             <div><label>Reason (required for withdrawal)</label><input type="text" data-goaltx-reason="${g.id}" placeholder="e.g. Weekend trip"></div>
@@ -1114,7 +1121,7 @@
                   <td class="row-actions"><button data-save-goaltx="${t.id}">Save</button><button data-cancel-edit="1">Cancel</button></td></tr>`;
               }
               const asset=t.toAssetId?state.assets.find(a=>a.id===t.toAssetId):null;
-              const acctNote=t.account? ' <span style="font-size:10px;color:var(--ink-soft);">('+(t.type==='contribution'?'from ':'to ')+esc(t.account)+')</span>' : '';
+              const acctNote=(t.fromAccount&&t.toAccount)? ' <span style="font-size:10px;color:var(--ink-soft);">('+esc(t.fromAccount)+' → '+esc(t.toAccount)+')</span>' : '';
               return `<tr class="${t.type==='withdrawal'?'irregular':(t.type==='transfer'?'transfer-row':'')}"><td>${esc(t.date)}</td><td>${esc(t.person)}</td><td>${t.type}${asset?' → '+esc(asset.name):''}${acctNote}</td><td>${esc(t.reason||'—')}</td><td class="amt">${t.type!=='contribution'?'-':''}${fmtINR(t.amount)}</td>
                 <td class="row-actions"><button data-edit-goaltx="${t.id}" ${canEdit(t.person)?'':'disabled'}>Edit</button><button data-del-goaltx="${t.id}" data-goaltx-transferid="${t.transferId||''}" ${canEdit(t.person)?'':'disabled'}>Delete</button></td></tr>`;
             }).join('')}
@@ -1130,7 +1137,7 @@
         <form id="goal-form" class="form-grid">
           <div><label>Name</label><input type="text" name="name" placeholder="e.g. Trip 2027" required></div>
           <div><label>Target amount</label><input type="number" name="target" min="0" required></div>
-          <div><label>Parked in account</label><select name="account">${acctOpts}</select></div>
+          <div><label>Default parked account</label><select name="account">${acctOpts}</select></div>
           <div><button class="btn" type="submit">Add goal</button></div>
         </form>
       </div>
@@ -1559,8 +1566,8 @@
     state.transfers.filter(t=>t.toAccount===acct.name).forEach(t=>raw.push({date:t.date,type:'Transfer in',desc:'From '+t.fromAccount+(t.note?' — '+t.note:''),person:t.person,base:Number(t.amount)}));
     state.assetTx.filter(t=>t.kind==='contribution'&&t.account===acct.name).forEach(t=>raw.push({date:t.date,type:'Asset purchase',desc:assetName(t.assetId),person:'—',base:-Number(t.amount)}));
     state.assetTx.filter(t=>t.kind==='withdrawal'&&t.account===acct.name).forEach(t=>raw.push({date:t.date,type:'Asset sale',desc:assetName(t.assetId),person:'—',base:Number(t.amount)}));
-    state.goalTx.filter(t=>t.type==='contribution'&&t.account===acct.name).forEach(t=>raw.push({date:t.date,type:'Goal contribution',desc:goalName(t.goalId),person:t.person,base:-Number(t.amount)}));
-    state.goalTx.filter(t=>t.type==='withdrawal'&&t.account===acct.name).forEach(t=>raw.push({date:t.date,type:'Goal withdrawal',desc:goalName(t.goalId),person:t.person,base:Number(t.amount)}));
+    state.goalTx.filter(t=>(t.type==='contribution'||t.type==='withdrawal') && t.fromAccount===acct.name).forEach(t=>raw.push({date:t.date,type:'Goal '+t.type+' (out)',desc:goalName(t.goalId)+' → '+t.toAccount,person:t.person,base:-Number(t.amount)}));
+    state.goalTx.filter(t=>(t.type==='contribution'||t.type==='withdrawal') && t.toAccount===acct.name).forEach(t=>raw.push({date:t.date,type:'Goal '+t.type+' (in)',desc:goalName(t.goalId)+' ← '+t.fromAccount,person:t.person,base:Number(t.amount)}));
     raw.sort((a,b)=>a.date.localeCompare(b.date));
     return raw.map(r=>({date:r.date, type:r.type, desc:r.desc, person:r.person, delta: isLiab? -r.base : r.base}));
   }
@@ -1825,11 +1832,9 @@
         sel.addEventListener('change', ()=>{
           const gid=sel.dataset.goaltxType;
           const assetField=document.querySelector(`[data-goaltx-assetfield="${gid}"]`);
-          const acctField=document.querySelector(`[data-goaltx-accountfield="${gid}"]`);
-          const acctLabel=document.querySelector(`[data-goaltx-accountlabel="${gid}"]`);
+          const acctFields=document.querySelectorAll(`[data-goaltx-accountfield="${gid}"]`);
           if(assetField) assetField.style.display = sel.value==='transfer' ? 'block' : 'none';
-          if(acctField) acctField.style.display = sel.value==='transfer' ? 'none' : 'block';
-          if(acctLabel) acctLabel.textContent = sel.value==='withdrawal' ? 'Deposit into account' : 'Paid from account';
+          acctFields.forEach(f=>{ f.style.display = sel.value==='transfer' ? 'none' : 'block'; });
         });
       });
       document.querySelectorAll('[data-goaltx-submit]').forEach(b=>b.addEventListener('click', async()=>{
@@ -1847,10 +1852,12 @@
           if(!assetSel || !assetSel.value){ alert('Choose a destination asset for the transfer.'); return; }
           createLinkedTransfer(gid, assetSel.value, amount, date, person);
         } else {
-          const acctSel=document.querySelector(`[data-goaltx-account="${gid}"]`);
-          const account=acctSel?acctSel.value:null;
-          if(!account){ alert('Choose the account this money is moving '+(type==='withdrawal'?'into.':'from.')); return; }
-          state.goalTx.push({id:nextId(), goalId:gid, date, person, type, amount, irregular:type==='withdrawal', reason, account});
+          const fromSel=document.querySelector(`[data-goaltx-fromaccount="${gid}"]`);
+          const toSel=document.querySelector(`[data-goaltx-toaccount="${gid}"]`);
+          const fromAccount=fromSel?fromSel.value:null, toAccount=toSel?toSel.value:null;
+          if(!fromAccount || !toAccount){ alert('Choose both the From and To account for this transaction.'); return; }
+          if(fromAccount===toAccount){ alert('From and To account must be different.'); return; }
+          state.goalTx.push({id:nextId(), goalId:gid, date, person, type, amount, irregular:type==='withdrawal', reason, fromAccount, toAccount});
         }
         await saveState(); renderTabContent();
       }));
