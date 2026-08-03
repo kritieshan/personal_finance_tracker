@@ -226,6 +226,7 @@
   }
   function currentRealMonth(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
   function todayDate(){ const d=new Date(); return d.toISOString().slice(0,10); }
+  function shiftDateByDays(dateStr,n){ const d=new Date(dateStr+'T00:00:00Z'); d.setUTCDate(d.getUTCDate()+n); return d.toISOString().slice(0,10); }
   function monthsBetween(start,end){
     let out=[]; let cur=start; let guard=0;
     while(cur<=end && guard<600){ out.push(cur); cur=shiftMonth(cur,1); guard++; }
@@ -465,15 +466,19 @@
     assetTxFor(assetId).filter(t=>t.date<=dateStr).forEach(t=>{ if(t.kind==='contribution') sum+=Number(t.amount); else if(t.kind==='withdrawal') sum-=Number(t.amount); });
     return sum;
   }
-  function assetCurrentValue(assetId){
-    const valuations=assetTxFor(assetId).filter(t=>t.kind==='valuation');
-    if(valuations.length) return Number(valuations[valuations.length-1].amount);
-    return assetInvested(assetId);
-  }
+  function assetCurrentValue(assetId){ return assetCurrentValueAsOf(assetId, '9999-99-99'); }
   function assetCurrentValueAsOf(assetId,dateStr){
-    const val=assetTxFor(assetId).filter(t=>t.kind==='valuation'&&t.date<=dateStr);
-    if(val.length) return Number(val[val.length-1].amount);
-    return assetInvestedAsOf(assetId,dateStr);
+    const tx=assetTxFor(assetId).filter(t=>t.date<=dateStr);
+    let lastValIdx=-1;
+    tx.forEach((t,i)=>{ if(t.kind==='valuation') lastValIdx=i; });
+    if(lastValIdx===-1) return assetInvestedAsOf(assetId,dateStr);
+    let value=Number(tx[lastValIdx].amount);
+    for(let i=lastValIdx+1;i<tx.length;i++){
+      const t=tx[i];
+      if(t.kind==='contribution') value+=Number(t.amount);
+      else if(t.kind==='withdrawal') value-=Number(t.amount);
+    }
+    return value;
   }
   function totalInvestedAsOf(dateStr){ return state.assets.reduce((s,a)=>s+assetInvestedAsOf(a.id,dateStr),0); }
   function totalCurrentValueAsOf(dateStr){ return state.assets.reduce((s,a)=>s+assetCurrentValueAsOf(a.id,dateStr),0); }
@@ -515,10 +520,12 @@
     const transfersIn=state.transfers.filter(t=>t.toAccount===acct.name && t.date>=openDate && t.date<=dateStr).reduce((s,t)=>s+Number(t.amount),0);
     const assetContribOut=state.assetTx.filter(t=>t.kind==='contribution' && t.account===acct.name && t.date>=openDate && t.date<=dateStr).reduce((s,t)=>s+Number(t.amount),0);
     const assetWithdrawIn=state.assetTx.filter(t=>t.kind==='withdrawal' && t.account===acct.name && t.date>=openDate && t.date<=dateStr).reduce((s,t)=>s+Number(t.amount),0);
+    const goalContribOut=state.goalTx.filter(t=>t.type==='contribution' && t.account===acct.name && t.date>=openDate && t.date<=dateStr).reduce((s,t)=>s+Number(t.amount),0);
+    const goalWithdrawIn=state.goalTx.filter(t=>t.type==='withdrawal' && t.account===acct.name && t.date>=openDate && t.date<=dateStr).reduce((s,t)=>s+Number(t.amount),0);
     if(acctIsLiability(acct)){
-      bal += expenseOut - transfersIn + transfersOut - incomeIn + assetContribOut - assetWithdrawIn;
+      bal += expenseOut - transfersIn + transfersOut - incomeIn + assetContribOut - assetWithdrawIn + goalContribOut - goalWithdrawIn;
     } else {
-      bal += incomeIn - expenseOut - transfersOut + transfersIn - assetContribOut + assetWithdrawIn;
+      bal += incomeIn - expenseOut - transfersOut + transfersIn - assetContribOut + assetWithdrawIn - goalContribOut + goalWithdrawIn;
     }
     return bal;
   }
@@ -700,7 +707,7 @@
         <div class="session-bar">${demoMode?'<span class="pill blue">Preview mode — nothing is saved</span>':`Signed in as <b>${esc(session.loggedInAs)}</b> (${esc(session.email)})`} &nbsp;·&nbsp; <span id="save-status" style="font-family:var(--mono);"></span> ${!demoMode?'&nbsp;·&nbsp;<button id="refresh-btn">Refresh</button>':''} &nbsp;·&nbsp; <button id="logout-btn">${demoMode?'Exit preview':'Sign out'}</button></div>
       </div>
       <div class="tabs">
-        ${['dashboard','analytics','goals','entries','networth','setup'].map(t=>`<button class="tab-btn ${state.activeTab===t?'active':''}" data-tab="${t}">${t==='networth'?'Net Worth':t.charAt(0).toUpperCase()+t.slice(1)}</button>`).join('')}
+        ${['dashboard','analytics','goals','entries','networth','ledger','setup'].map(t=>`<button class="tab-btn ${state.activeTab===t?'active':''}" data-tab="${t}">${t==='networth'?'Net Worth':t.charAt(0).toUpperCase()+t.slice(1)}</button>`).join('')}
       </div>
       <div id="tab-content"></div>
     `;
@@ -721,6 +728,7 @@
     else if(state.activeTab==='goals') c.innerHTML=goalsHTML();
     else if(state.activeTab==='entries') c.innerHTML=entriesHTML();
     else if(state.activeTab==='networth') c.innerHTML=netWorthHTML();
+    else if(state.activeTab==='ledger') c.innerHTML=ledgerHTML();
     else c.innerHTML=setupHTML();
     bindTabEvents();
   }
@@ -1087,11 +1095,13 @@
             <div><label>Date</label><input type="date" data-goaltx-date="${g.id}" value="${todayDate()}"></div>
             <div><label>Person</label><select data-goaltx-person="${g.id}">${state.people.map(p=>`<option value="${esc(p)}">${esc(p)}</option>`).join('')}</select></div>
             <div><label>Type</label><select data-goaltx-type="${g.id}"><option value="contribution">Contribution</option><option value="withdrawal">Withdrawal</option><option value="transfer">Transfer to asset</option></select></div>
+            <div class="goaltx-account-field" data-goaltx-accountfield="${g.id}"><label data-goaltx-accountlabel="${g.id}">Paid from account</label><select data-goaltx-account="${g.id}">${acctOpts}</select></div>
             <div class="goaltx-asset-field" data-goaltx-assetfield="${g.id}" style="display:none;"><label>Destination asset</label><select data-goaltx-asset="${g.id}">${assetOpts}</select></div>
             <div><label>Amount</label><input type="number" min="0" data-goaltx-amount="${g.id}"></div>
             <div><label>Reason (required for withdrawal)</label><input type="text" data-goaltx-reason="${g.id}" placeholder="e.g. Weekend trip"></div>
             <div><button class="btn small" data-goaltx-submit="${g.id}">Log</button></div>
           </div>
+          ${!state.accounts.length?'<div style="font-size:11px;color:var(--ink-soft);margin-top:4px;">Add an account in Setup to track which account funds this goal.</div>':''}
           ${!state.assets.length?'<div style="font-size:11px;color:var(--ink-soft);margin-top:4px;">Add an asset in Net Worth first to enable transfers.</div>':''}
           ${tx.length? `<table style="margin-top:12px;"><thead><tr><th>Date</th><th>Person</th><th>Type</th><th>Reason</th><th class="amt">Amount</th><th></th></tr></thead><tbody>
             ${tx.map(t=>{
@@ -1104,7 +1114,8 @@
                   <td class="row-actions"><button data-save-goaltx="${t.id}">Save</button><button data-cancel-edit="1">Cancel</button></td></tr>`;
               }
               const asset=t.toAssetId?state.assets.find(a=>a.id===t.toAssetId):null;
-              return `<tr class="${t.type==='withdrawal'?'irregular':(t.type==='transfer'?'transfer-row':'')}"><td>${esc(t.date)}</td><td>${esc(t.person)}</td><td>${t.type}${asset?' → '+esc(asset.name):''}</td><td>${esc(t.reason||'—')}</td><td class="amt">${t.type!=='contribution'?'-':''}${fmtINR(t.amount)}</td>
+              const acctNote=t.account? ' <span style="font-size:10px;color:var(--ink-soft);">('+(t.type==='contribution'?'from ':'to ')+esc(t.account)+')</span>' : '';
+              return `<tr class="${t.type==='withdrawal'?'irregular':(t.type==='transfer'?'transfer-row':'')}"><td>${esc(t.date)}</td><td>${esc(t.person)}</td><td>${t.type}${asset?' → '+esc(asset.name):''}${acctNote}</td><td>${esc(t.reason||'—')}</td><td class="amt">${t.type!=='contribution'?'-':''}${fmtINR(t.amount)}</td>
                 <td class="row-actions"><button data-edit-goaltx="${t.id}" ${canEdit(t.person)?'':'disabled'}>Edit</button><button data-del-goaltx="${t.id}" data-goaltx-transferid="${t.transferId||''}" ${canEdit(t.person)?'':'disabled'}>Delete</button></td></tr>`;
             }).join('')}
           </tbody></table>` : '<div class="empty">No activity logged for this goal yet.</div>'}
@@ -1479,6 +1490,9 @@
           <div><label>Name</label><input type="text" name="name" placeholder="e.g. Zerodha equity, HDFC savings" required></div>
           <div><label>Type</label><select name="type">${ASSET_TYPES.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')}</select></div>
           <div><label>Owner</label><select name="owner">${OWNER_OPTIONS().map(p=>`<option>${esc(p)}</option>`).join('')}</select></div>
+          <div><label>Opening value (optional)</label><input type="number" min="0" name="openingValue" placeholder="e.g. 50000"></div>
+          <div><label>As of date</label><input type="date" name="openingDate" value="${todayDate()}"></div>
+          <div><label>Paid from account (optional)</label><select name="openingAccount"><option value="">— not from a tracked account —</option>${state.accounts.map(a=>`<option value="${esc(a.name)}">${esc(a.name)}</option>`).join('')}</select></div>
           <div><button class="btn" type="submit">Add asset</button></div>
         </form>
         <div class="divider"></div>
@@ -1532,6 +1546,88 @@
     `;
   }
 
+
+  // ---------------- LEDGER ----------------
+  function accountLedgerEntries(acct){
+    const isLiab=acctIsLiability(acct);
+    const goalName=id=>{ const g=state.goals.find(x=>x.id===id); return g?g.name:'—'; };
+    const assetName=id=>{ const a=state.assets.find(x=>x.id===id); return a?a.name:'—'; };
+    let raw=[];
+    state.income.filter(e=>e.account===acct.name).forEach(e=>raw.push({date:e.date,type:'Income',desc:e.source,person:e.person,base:Number(e.amount)}));
+    state.expenses.filter(e=>e.account===acct.name).forEach(e=>raw.push({date:e.date,type:'Expense',desc:e.category+(e.description?': '+e.description:''),person:e.person,base:-Number(e.amount)}));
+    state.transfers.filter(t=>t.fromAccount===acct.name).forEach(t=>raw.push({date:t.date,type:'Transfer out',desc:'To '+t.toAccount+(t.note?' — '+t.note:''),person:t.person,base:-Number(t.amount)}));
+    state.transfers.filter(t=>t.toAccount===acct.name).forEach(t=>raw.push({date:t.date,type:'Transfer in',desc:'From '+t.fromAccount+(t.note?' — '+t.note:''),person:t.person,base:Number(t.amount)}));
+    state.assetTx.filter(t=>t.kind==='contribution'&&t.account===acct.name).forEach(t=>raw.push({date:t.date,type:'Asset purchase',desc:assetName(t.assetId),person:'—',base:-Number(t.amount)}));
+    state.assetTx.filter(t=>t.kind==='withdrawal'&&t.account===acct.name).forEach(t=>raw.push({date:t.date,type:'Asset sale',desc:assetName(t.assetId),person:'—',base:Number(t.amount)}));
+    state.goalTx.filter(t=>t.type==='contribution'&&t.account===acct.name).forEach(t=>raw.push({date:t.date,type:'Goal contribution',desc:goalName(t.goalId),person:t.person,base:-Number(t.amount)}));
+    state.goalTx.filter(t=>t.type==='withdrawal'&&t.account===acct.name).forEach(t=>raw.push({date:t.date,type:'Goal withdrawal',desc:goalName(t.goalId),person:t.person,base:Number(t.amount)}));
+    raw.sort((a,b)=>a.date.localeCompare(b.date));
+    return raw.map(r=>({date:r.date, type:r.type, desc:r.desc, person:r.person, delta: isLiab? -r.base : r.base}));
+  }
+  function ledgerHTML(){
+    const acctFilter = state.ledgerFilter && state.ledgerFilter.account || 'all';
+    const ownerFilter = state.ledgerFilter && state.ledgerFilter.owner || 'all';
+    const fromDate = (state.ledgerFilter && state.ledgerFilter.from) || '';
+    const toDate = (state.ledgerFilter && state.ledgerFilter.to) || '';
+
+    const acctOptions = ['all'].concat(state.accounts.map(a=>a.name));
+
+    let body='';
+    if(!state.accounts.length){
+      body='<div class="empty">No accounts yet — add one in Setup → Payment modes / accounts.</div>';
+    } else if(acctFilter==='all'){
+      const visibleAccounts = state.accounts.filter(a=>ownerMatches(a.owner, ownerFilter));
+      let combined=[];
+      visibleAccounts.forEach(a=>{
+        accountLedgerEntries(a).forEach(e=>combined.push(Object.assign({account:a.name}, e)));
+      });
+      combined = combined.filter(e=> (!fromDate||e.date>=fromDate) && (!toDate||e.date<=toDate) );
+      combined.sort((a,b)=>b.date.localeCompare(a.date));
+      body = combined.length? `<table><thead><tr><th>Date</th><th>Account</th><th>Type</th><th>Description</th><th>Person</th><th class="amt">Amount</th></tr></thead><tbody>
+        ${combined.map(e=>`<tr><td>${esc(e.date)}</td><td>${esc(e.account)}</td><td>${esc(e.type)}</td><td>${esc(e.desc)}</td><td>${esc(e.person)}</td><td class="amt" style="color:${e.delta>=0?'var(--good)':'var(--bad)'};">${e.delta>=0?'+':''}${fmtINR(e.delta)}</td></tr>`).join('')}
+      </tbody></table>` : '<div class="empty">No entries match these filters.</div>';
+    } else {
+      const acct = state.accounts.find(a=>a.name===acctFilter);
+      if(!acct){ body='<div class="empty">Account not found.</div>'; }
+      else {
+        let entries = accountLedgerEntries(acct);
+        let startBalance = acctOpeningBalance(acct);
+        if(fromDate){
+          const dayBefore = shiftDateByDays(fromDate, -1);
+          startBalance = accountBalanceAsOf(acct, dayBefore);
+        }
+        entries = entries.filter(e=> (!fromDate||e.date>=fromDate) && (!toDate||e.date<=toDate) );
+        let bal=startBalance;
+        const rows=[{date: fromDate||acct.openingDate||'—', type:'Balance forward', desc:'—', person:'—', delta:null, balance:bal}];
+        entries.forEach(e=>{ bal+=e.delta; rows.push(Object.assign({balance:bal}, e)); });
+        body = `<table><thead><tr><th>Date</th><th>Type</th><th>Description</th><th>Person</th><th class="amt">Amount</th><th class="amt">Balance</th></tr></thead><tbody>
+          ${rows.map(r=>`<tr>${r.type==='Balance forward'?'<td colspan="4" style="font-style:italic;color:var(--ink-soft);">Balance forward</td>':`<td>${esc(r.date)}</td><td>${esc(r.type)}</td><td>${esc(r.desc)}</td><td>${esc(r.person)}</td>`}<td class="amt" style="color:${r.delta==null?'inherit':(r.delta>=0?'var(--good)':'var(--bad)')};">${r.delta==null?'—':(r.delta>=0?'+':'')+fmtINR(r.delta)}</td><td class="amt"><b>${fmtINR(r.balance)}</b></td></tr>`).join('')}
+        </tbody></table>`;
+      }
+    }
+
+    return `
+      <div class="filter-bar">
+        <div><label>Account</label>
+          <select id="ledger-account-filter">
+            ${acctOptions.map(a=>`<option value="${esc(a)}" ${acctFilter===a?'selected':''}>${a==='all'?'All accounts':esc(a)}</option>`).join('')}
+          </select>
+        </div>
+        <div><label>Owner</label>
+          <select id="ledger-owner-filter">
+            <option value="all" ${ownerFilter==='all'?'selected':''}>All</option>
+            ${OWNER_OPTIONS().map(p=>`<option value="${esc(p)}" ${ownerFilter===p?'selected':''}>${esc(p)}</option>`).join('')}
+          </select>
+        </div>
+        <div><label>From</label><input type="date" id="ledger-from-filter" value="${fromDate}"></div>
+        <div><label>To</label><input type="date" id="ledger-to-filter" value="${toDate}"></div>
+      </div>
+      <div class="card">
+        <h3>Account ledger ${acctFilter!=='all'?'— '+esc(acctFilter):''}</h3>
+        ${body}
+      </div>
+    `;
+  }
 
   // ---------------- SETUP ----------------
   function setupHTML(){
@@ -1728,8 +1824,12 @@
       document.querySelectorAll('[data-goaltx-type]').forEach(sel=>{
         sel.addEventListener('change', ()=>{
           const gid=sel.dataset.goaltxType;
-          const field=document.querySelector(`[data-goaltx-assetfield="${gid}"]`);
-          if(field) field.style.display = sel.value==='transfer' ? 'block' : 'none';
+          const assetField=document.querySelector(`[data-goaltx-assetfield="${gid}"]`);
+          const acctField=document.querySelector(`[data-goaltx-accountfield="${gid}"]`);
+          const acctLabel=document.querySelector(`[data-goaltx-accountlabel="${gid}"]`);
+          if(assetField) assetField.style.display = sel.value==='transfer' ? 'block' : 'none';
+          if(acctField) acctField.style.display = sel.value==='transfer' ? 'none' : 'block';
+          if(acctLabel) acctLabel.textContent = sel.value==='withdrawal' ? 'Deposit into account' : 'Paid from account';
         });
       });
       document.querySelectorAll('[data-goaltx-submit]').forEach(b=>b.addEventListener('click', async()=>{
@@ -1747,7 +1847,10 @@
           if(!assetSel || !assetSel.value){ alert('Choose a destination asset for the transfer.'); return; }
           createLinkedTransfer(gid, assetSel.value, amount, date, person);
         } else {
-          state.goalTx.push({id:nextId(), goalId:gid, date, person, type, amount, irregular:type==='withdrawal', reason});
+          const acctSel=document.querySelector(`[data-goaltx-account="${gid}"]`);
+          const account=acctSel?acctSel.value:null;
+          if(!account){ alert('Choose the account this money is moving '+(type==='withdrawal'?'into.':'from.')); return; }
+          state.goalTx.push({id:nextId(), goalId:gid, date, person, type, amount, irregular:type==='withdrawal', reason, account});
         }
         await saveState(); renderTabContent();
       }));
@@ -1783,7 +1886,14 @@
       if(assetForm) assetForm.addEventListener('submit', async(e)=>{
         e.preventDefault();
         const f=new FormData(assetForm);
-        state.assets.push({id:nextId(), name:f.get('name'), type:f.get('type'), owner:f.get('owner')});
+        const newId=nextId();
+        state.assets.push({id:newId, name:f.get('name'), type:f.get('type'), owner:f.get('owner')});
+        const openingValue=Number(f.get('openingValue')||0);
+        if(openingValue>0){
+          const entry={id:nextId(), assetId:newId, date:f.get('openingDate')||todayDate(), kind:'contribution', amount:openingValue};
+          if(f.get('openingAccount')) entry.account=f.get('openingAccount');
+          state.assetTx.push(entry);
+        }
         await saveState(); renderTabContent();
       });
       const kindSel=document.getElementById('assettx-kind-select');
@@ -1890,6 +2000,18 @@
         state.liabilityTx=state.liabilityTx.filter(t=>t.id!==b.dataset.delLiabtx);
         await saveState(); renderTabContent();
       }));
+    }
+
+    if(state.activeTab==='ledger'){
+      state.ledgerFilter = state.ledgerFilter || {};
+      const acctSel=document.getElementById('ledger-account-filter');
+      const ownerSel=document.getElementById('ledger-owner-filter');
+      const fromInp=document.getElementById('ledger-from-filter');
+      const toInp=document.getElementById('ledger-to-filter');
+      if(acctSel) acctSel.addEventListener('change', ()=>{ state.ledgerFilter.account=acctSel.value; saveState(); renderTabContent(); });
+      if(ownerSel) ownerSel.addEventListener('change', ()=>{ state.ledgerFilter.owner=ownerSel.value; saveState(); renderTabContent(); });
+      if(fromInp) fromInp.addEventListener('change', ()=>{ state.ledgerFilter.from=fromInp.value; saveState(); renderTabContent(); });
+      if(toInp) toInp.addEventListener('change', ()=>{ state.ledgerFilter.to=toInp.value; saveState(); renderTabContent(); });
     }
 
     if(state.activeTab==='setup'){
