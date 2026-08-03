@@ -1,0 +1,1722 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Income and allocation tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root{
+    --ink:#182530; --ink-soft:#4b5b66;
+    --paper:#f3f2ec; --card:#fffefb;
+    --line:#d9d6c8; --line-soft:#e8e6da;
+    --brass:#c1893a; --brass-bg:#f5e6cc;
+    --good:#1f8f5f; --good-bg:#dff3e8;
+    --bad:#d1483a; --bad-bg:#fbe4e0;
+    --blue:#3167ad; --blue-bg:#e2ebfa;
+    --serif:'Fraunces', serif; --sans:'Inter', sans-serif; --mono:'IBM Plex Mono', monospace;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);}
+  #app{max-width:1150px;margin:0 auto;padding:28px 24px 80px;}
+  .app-header{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:12px;}
+  .app-title{font-family:var(--serif);font-weight:700;font-size:28px;letter-spacing:-0.01em;}
+  .app-title small{display:block;font-family:var(--sans);font-weight:500;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-soft);margin-top:2px;}
+  .session-bar{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--ink-soft);flex-wrap:wrap;}
+  .session-bar b{color:var(--ink);}
+  .session-bar button{border:none;background:none;color:var(--blue);cursor:pointer;font-size:12px;text-decoration:underline;padding:0;}
+
+  .tabs{display:flex;gap:2px;background:var(--line-soft);border-radius:8px;padding:3px;flex-wrap:wrap;margin-bottom:18px;}
+  .tab-btn{border:none;background:transparent;font-family:var(--sans);font-size:13px;font-weight:600;padding:8px 14px;border-radius:6px;cursor:pointer;color:var(--ink-soft);}
+  .tab-btn.active{background:var(--card);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.08);}
+
+  .month-nav{display:flex;align-items:center;gap:10px;margin:4px 0 20px;}
+  .month-nav button{width:30px;height:30px;border-radius:50%;border:1px solid var(--line);background:var(--card);cursor:pointer;font-family:var(--mono);font-size:14px;color:var(--ink);}
+  .month-nav button:hover{background:var(--line-soft);}
+  .month-label{font-family:var(--mono);font-size:15px;font-weight:600;letter-spacing:.02em;min-width:120px;text-align:center;}
+
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin-bottom:16px;}
+  .card h3{margin:0 0 14px;font-family:var(--serif);font-size:17px;font-weight:600;}
+  .card h4{margin:0 0 10px;font-family:var(--serif);font-size:14px;font-weight:600;}
+
+  .summary-row{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;}
+  .stat .label{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--ink-soft);font-weight:600;}
+  .stat .value{font-family:var(--mono);font-size:20px;font-weight:600;margin-top:4px;}
+  .stat .value.bad{color:var(--bad);} .stat .value.good{color:var(--good);}
+
+  .people-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+  @media (max-width:760px){.people-grid{grid-template-columns:1fr;} .summary-row{grid-template-columns:repeat(2,1fr);}}
+
+  .person-card{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden;}
+  .person-head{padding:14px 18px;border-bottom:1px solid var(--line-soft);display:flex;justify-content:space-between;align-items:baseline;}
+  .person-name{font-family:var(--serif);font-weight:600;font-size:18px;}
+  .person-income{font-family:var(--mono);font-size:13px;color:var(--ink-soft);}
+
+  .cat-row{padding:12px 18px;border-bottom:1px solid var(--line-soft);}
+  .cat-row:last-child{border-bottom:none;}
+  .cat-row.goal-plan{background:var(--blue-bg);}
+  .cat-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;gap:8px;flex-wrap:wrap;}
+  .cat-name{font-size:13px;font-weight:600;}
+  .cat-amts{font-family:var(--mono);font-size:12px;color:var(--ink-soft);}
+  .cat-amts b{color:var(--ink);}
+  .bar-track{position:relative;height:9px;background:var(--line-soft);border-radius:5px;overflow:hidden;}
+  .bar-planned{position:absolute;top:0;left:0;height:100%;border-right:2px solid var(--ink-soft);opacity:.35;background:var(--ink-soft);}
+  .bar-actual{position:absolute;top:0;left:0;height:100%;border-radius:5px;background:var(--brass);}
+  .bar-actual.over{background:var(--bad);}
+  .cat-variance{font-family:var(--mono);font-size:11px;margin-top:5px;}
+  .cat-variance.bad{color:var(--bad);} .cat-variance.good{color:var(--good);}
+
+  .notes li{font-size:13px;margin-bottom:6px;line-height:1.5;}
+  .notes li b{font-family:var(--mono);}
+
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--ink-soft);font-weight:600;padding:6px 8px;border-bottom:1px solid var(--line);}
+  td{padding:8px;border-bottom:1px solid var(--line-soft);vertical-align:middle;}
+  td.amt{font-family:var(--mono);text-align:right;white-space:nowrap;}
+  tr:hover td{background:#faf9f4;}
+  .row-actions button{border:none;background:none;cursor:pointer;color:var(--ink-soft);font-size:12px;text-decoration:underline;margin-right:8px;}
+  .row-actions button:hover{color:var(--bad);}
+  .row-actions button:disabled{color:#c7c5ba;cursor:not-allowed;text-decoration:none;}
+  tr.irregular td{background:var(--brass-bg)!important;}
+  tr.transfer-row td{background:var(--blue-bg)!important;}
+  .flag-pill{display:inline-block;font-size:10px;font-weight:700;padding:1px 7px;border-radius:20px;background:var(--brass);color:#fff;text-transform:uppercase;letter-spacing:.04em;margin-left:6px;}
+  .flag-pill.blue{background:var(--blue);}
+  .warn-badge{display:inline-block;font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;background:var(--bad-bg);color:var(--bad);margin-left:6px;}
+
+  .form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;align-items:end;}
+  label{display:block;font-size:11px;font-weight:600;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;}
+  input,select{width:100%;padding:8px 9px;border:1px solid var(--line);border-radius:6px;font-family:var(--sans);font-size:13px;background:#fff;color:var(--ink);}
+  input:focus,select:focus{outline:2px solid var(--brass);outline-offset:1px;border-color:var(--brass);}
+  input:disabled,select:disabled{background:#f1f0eb;color:#a3a196;}
+  .checkbox-row{display:flex;align-items:center;gap:6px;}
+  .checkbox-row input{width:auto;}
+  .btn{border:none;border-radius:6px;padding:9px 16px;font-family:var(--sans);font-weight:600;font-size:13px;cursor:pointer;background:var(--ink);color:#fff;}
+  .btn:hover{background:#0e181f;}
+  .btn.secondary{background:transparent;color:var(--ink);border:1px solid var(--line);}
+  .btn.secondary:hover{background:var(--line-soft);}
+  .btn.small{padding:5px 10px;font-size:12px;}
+  .btn:disabled{opacity:.45;cursor:not-allowed;}
+
+  .subsection-title{font-family:var(--serif);font-size:15px;font-weight:600;margin:0 0 12px;}
+  .divider{height:1px;background:var(--line);margin:22px 0;}
+  .pill{display:inline-block;font-size:11px;font-weight:600;padding:2px 9px;border-radius:20px;background:var(--brass-bg);color:#7a5518;margin-left:8px;}
+  .pill.blue{background:var(--blue-bg);color:var(--blue);}
+  .empty{color:var(--ink-soft);font-size:13px;padding:16px 0;text-align:center;}
+  .pct-input-row{display:grid;grid-template-columns:1.4fr .8fr .8fr;gap:8px;align-items:center;margin-bottom:8px;}
+  .pct-sum{font-family:var(--mono);font-size:12px;margin-top:8px;}
+  .pct-sum.bad{color:var(--bad);} .pct-sum.good{color:var(--good);}
+  .flex-between{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;}
+  .tag-list{display:flex;flex-wrap:wrap;gap:8px;}
+  .tag{display:flex;align-items:center;gap:6px;background:var(--line-soft);border-radius:20px;padding:4px 6px 4px 12px;font-size:12px;}
+  .tag button{border:none;background:none;cursor:pointer;color:var(--ink-soft);font-size:13px;line-height:1;padding:2px 4px;}
+  .tag button:hover{color:var(--bad);}
+  .add-inline{display:flex;gap:8px;margin-top:8px;}
+  .add-inline input,.add-inline select{flex:1;}
+  .loading-msg{padding:60px 0;text-align:center;color:var(--ink-soft);font-family:var(--mono);font-size:13px;}
+
+  .login-wrap{max-width:400px;margin:70px auto;text-align:center;}
+  .login-wrap .card{text-align:left;}
+  .login-note{font-size:12px;color:var(--ink-soft);margin-top:10px;line-height:1.5;}
+  .g-signin-btn{display:flex;justify-content:center;margin:14px 0;}
+
+  .goal-card{border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:14px;background:var(--card);}
+  .goal-top{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;margin-bottom:8px;}
+  .goal-name{font-family:var(--serif);font-weight:600;font-size:16px;}
+  .goal-sub{font-family:var(--mono);font-size:12px;color:var(--ink-soft);}
+  .progress-track{height:14px;background:var(--line-soft);border-radius:7px;overflow:hidden;position:relative;margin:8px 0;}
+  .progress-fill{height:100%;background:var(--blue);border-radius:7px;}
+  .progress-fill.done{background:var(--good);}
+
+  .filter-bar{display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin-bottom:18px;}
+  .chart-row{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+  @media (max-width:800px){.chart-row{grid-template-columns:1fr;}}
+  .legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;font-size:12px;}
+  .legend span{display:inline-flex;align-items:center;gap:5px;}
+  .legend i{width:10px;height:10px;border-radius:2px;display:inline-block;}
+  .banner{background:var(--brass-bg);border:1px solid var(--brass);color:#5c470f;padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:16px;}
+  .banner.blue{background:var(--blue-bg);border-color:var(--blue);color:#1d3a63;}
+  .banner-row{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px;}
+  .banner-row:last-child{margin-bottom:0;}
+  @media print{
+    .tabs, .app-header .session-bar, .month-nav, .no-print{display:none!important;}
+    body{background:#fff;}
+    .card{border:none;box-shadow:none;}
+  }
+</style>
+</head>
+<body>
+<div id="app"><div class="loading-msg">Opening the ledger…</div></div>
+<script>
+(function(){
+  // ====== ONE-TIME CONFIG — fill these in before deploying ======
+  const GOOGLE_CLIENT_ID = 'REPLACE_WITH_YOUR_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com';
+  const DATA_FILE_NAME = 'income-allocation-tracker-data.json';
+  const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email';
+  // ================================================================
+
+  const MONTHS=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const DEFAULT_CATEGORIES=["Investment","Monthly Expenses","EMI","Dad Payment","Miscellaneous"];
+  const DEFAULT_PEOPLE=["Eshan","Kriti"];
+  const DEFAULT_ACCOUNTS=[{name:"Cash",type:"cash"},{name:"HDFC Card",type:"card"},{name:"Net Banking",type:"bank"}];
+  const CHART_COLORS=["#3167ad","#e0763f","#1f8f5f","#c4457a","#8a5bc4","#d4a017","#2f9aa0","#a8383b","#5f8f2f","#c1893a"];
+  const ASSET_TYPES=["Equity","Mutual Fund","Gold","Fixed Deposit","Real Estate","Cash","Bank Account","Other"];
+  const LIABILITY_TYPES=["Loan","Credit Card","Other"];
+
+  let state=null;
+  let session={loggedInAs:null, email:null, accessToken:null, driveFileId:null};
+  let demoMode=false;
+  let uid=1;
+  function nextId(){return 'id'+(uid++)+'-'+Math.random().toString(36).slice(2,7);}
+
+  function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+  function fmtINR(n){
+    n=Math.round(n||0);
+    const neg=n<0; n=Math.abs(n);
+    let s=n.toString();
+    let last3=s.length>3?s.slice(-3):s;
+    let rest=s.length>3?s.slice(0,-3):'';
+    if(rest!=''){ rest=rest.replace(/\B(?=(\d{2})+(?!\d))/g,','); }
+    let out=(rest?rest+',':'')+last3;
+    return (neg?'-':'')+'₹'+out;
+  }
+  function monthLabel(m){ const [y,mm]=m.split('-'); return MONTHS[parseInt(mm,10)-1]+' '+y.slice(2); }
+  function shiftMonth(m,delta){
+    let [y,mm]=m.split('-').map(Number);
+    mm+=delta;
+    while(mm>12){mm-=12;y+=1;}
+    while(mm<1){mm+=12;y-=1;}
+    return y+'-'+String(mm).padStart(2,'0');
+  }
+  function currentRealMonth(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
+  function todayDate(){ const d=new Date(); return d.toISOString().slice(0,10); }
+  function monthsBetween(start,end){
+    let out=[]; let cur=start; let guard=0;
+    while(cur<=end && guard<600){ out.push(cur); cur=shiftMonth(cur,1); guard++; }
+    return out;
+  }
+  function fyBounds(refMonth){
+    let [y,mm]=refMonth.split('-').map(Number);
+    let startYear = mm>=4 ? y : y-1;
+    return {start:startYear+'-04', end:(startYear+1)+'-03'};
+  }
+  function halfBounds(refMonth){
+    const fy=fyBounds(refMonth);
+    const [y]=fy.start.split('-').map(Number);
+    const [ry,rm]=refMonth.split('-').map(Number);
+    if(rm>=4 && rm<=9) return {start:y+'-04', end:y+'-09'};
+    return {start:(rm>=10?y:y)+'-10', end:(rm>=10?y+1:y+1)+'-03'};
+  }
+  function quarterBounds(refMonth){
+    const fy=fyBounds(refMonth);
+    const [fyYear]=fy.start.split('-').map(Number);
+    const quarters=[[fyYear+'-04',fyYear+'-06'],[fyYear+'-07',fyYear+'-09'],[fyYear+'-10',fyYear+'-12'],[(fyYear+1)+'-01',(fyYear+1)+'-03']];
+    for(const q of quarters){ if(refMonth>=q[0] && refMonth<=q[1]) return {start:q[0],end:q[1]}; }
+    return {start:refMonth,end:refMonth};
+  }
+
+  function defaultState(){
+    return {
+      people: DEFAULT_PEOPLE.slice(),
+      categories: DEFAULT_CATEGORIES.slice(),
+      accounts: DEFAULT_ACCOUNTS.map(a=>Object.assign({},a)),
+      allocationVersions: [],
+      goals: [],
+      goalTx: [],
+      recurringTransfers: [],
+      income: [],
+      expenses: [],
+      transfers: [],
+      assets: [],
+      assetTx: [],
+      liabilities: [],
+      liabilityTx: [],
+      auth: {personByEmail:{}},
+      currentMonth: currentRealMonth(),
+      activeTab: 'dashboard',
+      analyticsRange: {mode:'month'}
+    };
+  }
+
+  // ---------------- GOOGLE AUTH + DRIVE ----------------
+  let tokenClient=null;
+  function initGoogle(){
+    return new Promise((resolve)=>{
+      const check=setInterval(()=>{
+        if(window.google && google.accounts && google.accounts.oauth2){
+          clearInterval(check);
+          tokenClient=google.accounts.oauth2.initTokenClient({client_id:GOOGLE_CLIENT_ID, scope:DRIVE_SCOPE, callback:()=>{}});
+          resolve();
+        }
+      },100);
+    });
+  }
+  function requestToken(){
+    return new Promise((resolve,reject)=>{
+      tokenClient.callback=(resp)=>{
+        if(resp.error){ reject(resp); return; }
+        session.accessToken=resp.access_token;
+        resolve(resp.access_token);
+      };
+      tokenClient.requestAccessToken({prompt: session.accessToken?'':'consent'});
+    });
+  }
+  async function driveFetch(url, options){
+    options=options||{};
+    options.headers=Object.assign({}, options.headers, {Authorization:'Bearer '+session.accessToken});
+    let res=await fetch(url, options);
+    if(res.status===401){
+      await requestToken();
+      options.headers.Authorization='Bearer '+session.accessToken;
+      res=await fetch(url, options);
+    }
+    return res;
+  }
+  async function fetchUserEmail(){
+    const res=await driveFetch('https://www.googleapis.com/oauth2/v3/userinfo');
+    const data=await res.json();
+    return data.email;
+  }
+  async function findOrCreateDriveFile(){
+    const q=encodeURIComponent(`name='${DATA_FILE_NAME}' and trashed=false`);
+    const searchRes=await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&spaces=drive`);
+    const searchData=await searchRes.json();
+    if(searchData.files && searchData.files.length) return searchData.files[0].id;
+    const metadata={name:DATA_FILE_NAME, mimeType:'application/json'};
+    const boundary='ial_boundary_xyz';
+    const body =
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n`+
+      `--${boundary}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(defaultState())}\r\n`+
+      `--${boundary}--`;
+    const createRes=await driveFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',{
+      method:'POST', headers:{'Content-Type':`multipart/related; boundary=${boundary}`}, body
+    });
+    const createData=await createRes.json();
+    return createData.id;
+  }
+  async function loadStateFromDrive(){
+    session.driveFileId = await findOrCreateDriveFile();
+    const res=await driveFetch(`https://www.googleapis.com/drive/v3/files/${session.driveFileId}?alt=media`);
+    const text=await res.text();
+    try{ state=Object.assign(defaultState(), JSON.parse(text)); }
+    catch(e){ state=defaultState(); }
+  }
+  let saveTimer=null;
+  async function saveState(){
+    if(demoMode) return;
+    if(!session.driveFileId) return;
+    clearTimeout(saveTimer);
+    const statusEl=()=>document.getElementById('save-status');
+    if(statusEl()) statusEl().textContent='Saving…';
+    saveTimer=setTimeout(async()=>{
+      try{
+        await driveFetch(`https://www.googleapis.com/upload/drive/v3/files/${session.driveFileId}?uploadType=media`,{
+          method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(state)
+        });
+        if(statusEl()) statusEl().textContent='Saved '+new Date().toLocaleTimeString();
+      }catch(e){ console.error('Drive save failed', e); if(statusEl()) statusEl().textContent='Save failed — check connection'; }
+    }, 300);
+  }
+  async function refreshFromDrive(){
+    if(demoMode || !session.driveFileId) return;
+    const el=document.getElementById('save-status');
+    if(el) el.textContent='Refreshing…';
+    const keepTab=state.activeTab, keepMonth=state.currentMonth;
+    await loadStateFromDrive();
+    state.activeTab=keepTab; state.currentMonth=keepMonth;
+    renderTabContent();
+    const el2=document.getElementById('save-status');
+    if(el2) el2.textContent='Refreshed '+new Date().toLocaleTimeString();
+  }
+
+  function canEdit(personOfEntry){ return session.loggedInAs && session.loggedInAs===personOfEntry; }
+  function isLoggedIn(){ return !!session.loggedInAs; }
+
+  // ---- plan items (categories + goals combined for allocation %) ----
+  function planItems(){
+    const cats=state.categories.map(c=>({key:'cat:'+c, label:c, kind:'cat', ref:c}));
+    const gls=state.goals.map(g=>({key:'goal:'+g.id, label:g.name, kind:'goal', ref:g.id}));
+    return cats.concat(gls);
+  }
+  function allocationForMonth(month){
+    const versions=state.allocationVersions.slice().sort((a,b)=>a.effectiveMonth.localeCompare(b.effectiveMonth));
+    let applicable=null;
+    for(const v of versions){ if(v.effectiveMonth<=month) applicable=v; }
+    return applicable||null;
+  }
+  function monthIncomeByPerson(month){
+    const out={}; state.people.forEach(p=>out[p]=0);
+    state.income.filter(e=>e.date.slice(0,7)===month).forEach(e=>{ out[e.person]=(out[e.person]||0)+Number(e.amount); });
+    return out;
+  }
+  function monthExpenseByPersonCategory(month){
+    const out={};
+    state.people.forEach(p=>{ out[p]={}; state.categories.forEach(c=>out[p][c]=0); });
+    state.expenses.filter(e=>e.date.slice(0,7)===month && !e.irregular).forEach(e=>{
+      if(!out[e.person]) out[e.person]={};
+      out[e.person][e.category]=(out[e.person][e.category]||0)+Number(e.amount);
+    });
+    return out;
+  }
+  function goalTxForGoal(goalId){ return state.goalTx.filter(t=>t.goalId===goalId); }
+  function goalBalance(goalId){
+    let bal=0;
+    goalTxForGoal(goalId).forEach(t=>{ bal += t.type==='contribution'?Number(t.amount):-Number(t.amount); });
+    return bal;
+  }
+  function goalBalanceAsOf(goalId,dateStr){
+    let bal=0;
+    goalTxForGoal(goalId).filter(t=>t.date<=dateStr).forEach(t=>{ bal += t.type==='contribution'?Number(t.amount):-Number(t.amount); });
+    return bal;
+  }
+  function goalMonthContribution(goalId, month, person){
+    return goalTxForGoal(goalId).filter(t=>t.type==='contribution' && t.date.slice(0,7)===month && (!person||t.person===person)).reduce((s,t)=>s+Number(t.amount),0);
+  }
+  function planItemPlannedActual(item, person, month, incomeForPerson){
+    const alloc=allocationForMonth(month);
+    const pct=(alloc && alloc.pct[person] && alloc.pct[person][item.key])||0;
+    const planned=incomeForPerson*pct/100;
+    let actual=0;
+    if(item.kind==='cat'){
+      const expByPC=monthExpenseByPersonCategory(month);
+      actual=(expByPC[person]&&expByPC[person][item.ref])||0;
+    } else {
+      actual=goalMonthContribution(item.ref, month, person);
+    }
+    return {pct,planned,actual};
+  }
+
+  // ---- linked goal->asset transfers ----
+  function createLinkedTransfer(goalId, assetId, amount, date, person){
+    const tid=nextId();
+    state.goalTx.push({id:nextId(), goalId, date, person, type:'transfer', amount, transferId:tid, toAssetId:assetId});
+    state.assetTx.push({id:nextId(), assetId, date, kind:'contribution', amount, transferId:tid, fromGoalId:goalId});
+    return tid;
+  }
+  function deleteLinkedTransfer(transferId){
+    state.goalTx=state.goalTx.filter(t=>t.transferId!==transferId);
+    state.assetTx=state.assetTx.filter(t=>t.transferId!==transferId);
+  }
+  function pendingRecurringTransfers(){
+    const month=state.currentMonth;
+    return state.recurringTransfers.filter(r=>!(r.loggedMonths||[]).includes(month));
+  }
+
+  // ---- Net worth helpers ----
+  function assetTxFor(assetId){ return state.assetTx.filter(t=>t.assetId===assetId).sort((a,b)=>a.date.localeCompare(b.date)); }
+  function assetValuationDeltas(assetId){
+    let baseline=0, deltas={};
+    assetTxFor(assetId).forEach(t=>{
+      if(t.kind==='contribution'){ baseline+=Number(t.amount); }
+      else if(t.kind==='valuation'){ deltas[t.id]=Number(t.amount)-baseline; baseline=Number(t.amount); }
+    });
+    return deltas;
+  }
+  function assetInvested(assetId){ return assetTxFor(assetId).filter(t=>t.kind==='contribution').reduce((s,t)=>s+Number(t.amount),0); }
+  function assetInvestedAsOf(assetId,dateStr){ return assetTxFor(assetId).filter(t=>t.kind==='contribution'&&t.date<=dateStr).reduce((s,t)=>s+Number(t.amount),0); }
+  function assetCurrentValue(assetId){
+    const valuations=assetTxFor(assetId).filter(t=>t.kind==='valuation');
+    if(valuations.length) return Number(valuations[valuations.length-1].amount);
+    return assetInvested(assetId);
+  }
+  function assetCurrentValueAsOf(assetId,dateStr){
+    const val=assetTxFor(assetId).filter(t=>t.kind==='valuation'&&t.date<=dateStr);
+    if(val.length) return Number(val[val.length-1].amount);
+    return assetInvestedAsOf(assetId,dateStr);
+  }
+  function totalInvestedAsOf(dateStr){ return state.assets.reduce((s,a)=>s+assetInvestedAsOf(a.id,dateStr),0); }
+  function totalCurrentValueAsOf(dateStr){ return state.assets.reduce((s,a)=>s+assetCurrentValueAsOf(a.id,dateStr),0); }
+  function liabilityTxFor(liabId){ return state.liabilityTx.filter(t=>t.liabilityId===liabId).sort((a,b)=>a.date.localeCompare(b.date)); }
+  function liabilityCurrentBalance(liab){
+    const tx=liabilityTxFor(liab.id);
+    if(tx.length) return Number(tx[tx.length-1].amount);
+    return Number(liab.openingBalance||0);
+  }
+  function liabilityBalanceAsOf(liab,dateStr){
+    const tx=liabilityTxFor(liab.id).filter(t=>t.date<=dateStr);
+    if(tx.length) return Number(tx[tx.length-1].amount);
+    return (liab.openingDate||'')<=dateStr ? Number(liab.openingBalance||0) : 0;
+  }
+  function netWorthAsOf(dateStr){
+    const assets=totalCurrentValueAsOf(dateStr)+state.goals.reduce((s,g)=>s+goalBalanceAsOf(g.id,dateStr),0);
+    const liab=state.liabilities.reduce((s,l)=>s+liabilityBalanceAsOf(l,dateStr),0);
+    return assets-liab;
+  }
+  // expected-vs-logged balance drift check for cash/bank assets matching an account name
+  function accountDriftCheck(asset){
+    if(!['Cash','Bank Account'].includes(asset.type)) return null;
+    const acct=state.accounts.find(a=>a.name.toLowerCase()===asset.name.toLowerCase());
+    if(!acct) return null;
+    const tx=assetTxFor(asset.id);
+    if(!tx.length) return null;
+    const anchor=tx[0];
+    const anchorDate=anchor.date, anchorAmount=Number(anchor.amount);
+    let expected=anchorAmount;
+    state.income.filter(e=>e.account===acct.name && e.date>anchorDate).forEach(e=>expected+=Number(e.amount));
+    state.expenses.filter(e=>e.account===acct.name && e.date>anchorDate).forEach(e=>expected-=Number(e.amount));
+    state.transfers.filter(t=>t.date>anchorDate).forEach(t=>{
+      if(t.fromAccount===acct.name) expected-=Number(t.amount);
+      if(t.toAccount===acct.name) expected+=Number(t.amount);
+    });
+    const logged=assetCurrentValue(asset.id);
+    const diff=logged-expected;
+    const threshold=Math.max(1000, Math.abs(expected)*0.02);
+    if(Math.abs(diff)>threshold) return {expected,logged,diff};
+    return null;
+  }
+
+  // ---- charts ----
+  function pieChart(data,size){
+    size=size||170;
+    const total=data.reduce((s,d)=>s+d.value,0)||1;
+    const r=size/2, cx=r, cy=r;
+    const nonZero=data.filter(d=>d.value>0);
+    if(nonZero.length===1){
+      return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}"><circle cx="${cx}" cy="${cy}" r="${r}" fill="${nonZero[0].color}"><title>${esc(nonZero[0].label)}: ${fmtINR(nonZero[0].value)}</title></circle></svg>`;
+    }
+    let cum=0, paths='';
+    data.forEach(d=>{
+      const start=cum/total*2*Math.PI; cum+=d.value; const end=cum/total*2*Math.PI;
+      const x1=cx+r*Math.sin(start), y1=cy-r*Math.cos(start);
+      const x2=cx+r*Math.sin(end), y2=cy-r*Math.cos(end);
+      const large=(end-start)>Math.PI?1:0;
+      if(d.value>0) paths+=`<path d="M${cx},${cy} L${x1.toFixed(2)},${y1.toFixed(2)} A${r},${r} 0 ${large} 1 ${x2.toFixed(2)},${y2.toFixed(2)} Z" fill="${d.color}"><title>${esc(d.label)}: ${fmtINR(d.value)}</title></path>`;
+    });
+    return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">${paths||'<circle cx="'+r+'" cy="'+r+'" r="'+r+'" fill="var(--line-soft)"/>'}</svg>`;
+  }
+  function lineChart(points,width,height,color){
+    width=width||520; height=height||150; color=color||'#3167ad';
+    const vals=points.map(p=>p.value);
+    const max=Math.max(...vals,1), min=Math.min(...vals,0);
+    const range=(max-min)||1;
+    const stepX=points.length>1?width/(points.length-1):width;
+    const coords=points.map((p,i)=>({x:i*stepX,y:height-((p.value-min)/range*height*0.82)-8}));
+    const path=coords.map((c,i)=>(i===0?'M':'L')+c.x.toFixed(1)+','+c.y.toFixed(1)).join(' ');
+    const dots=coords.map((c,i)=>`<circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="3" fill="${color}"><title>${esc(points[i].label)}: ${fmtINR(points[i].value)}</title></circle>`).join('');
+    const labels=coords.map((c,i)=>`<text x="${c.x.toFixed(1)}" y="${height+13}" font-size="9" text-anchor="middle" fill="#4b5b66">${esc(points[i].label)}</text>`).join('');
+    return `<svg viewBox="0 0 ${width} ${height+18}" width="100%" height="${height+18}"><path d="${path}" fill="none" stroke="${color}" stroke-width="2"/>${dots}${labels}</svg>`;
+  }
+  function lineChartMulti(seriesList,width,height){
+    width=width||520; height=height||160;
+    const allVals=seriesList.flatMap(s=>s.points.map(p=>p.value));
+    const max=Math.max(...allVals,1), min=Math.min(...allVals,0);
+    const range=(max-min)||1;
+    const n=seriesList[0].points.length;
+    const stepX=n>1?width/(n-1):width;
+    let svg='';
+    seriesList.forEach(s=>{
+      const coords=s.points.map((p,i)=>({x:i*stepX,y:height-((p.value-min)/range*height*0.82)-8}));
+      const path=coords.map((c,i)=>(i===0?'M':'L')+c.x.toFixed(1)+','+c.y.toFixed(1)).join(' ');
+      const dots=coords.map((c,i)=>`<circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="3" fill="${s.color}"><title>${esc(s.label)} · ${esc(s.points[i].label)}: ${fmtINR(s.points[i].value)}</title></circle>`).join('');
+      svg+=`<path d="${path}" fill="none" stroke="${s.color}" stroke-width="2"/>${dots}`;
+    });
+    const labels=seriesList[0].points.map((p,i)=>`<text x="${(i*stepX).toFixed(1)}" y="${height+13}" font-size="9" text-anchor="middle" fill="#4b5b66">${esc(p.label)}</text>`).join('');
+    return `<svg viewBox="0 0 ${width} ${height+18}" width="100%" height="${height+18}">${svg}${labels}</svg>`;
+  }
+  function groupedBar(labels,plannedArr,actualArr,width){
+    width=width||520;
+    const max=Math.max(...plannedArr,...actualArr,1);
+    const rowH=32; const leftW=140; const height=labels.length*rowH+8;
+    let rows='';
+    labels.forEach((l,i)=>{
+      const y=i*rowH+6;
+      const pw=Math.max(0,plannedArr[i]/max*(width-leftW-10));
+      const aw=Math.max(0,actualArr[i]/max*(width-leftW-10));
+      rows+=`<text x="0" y="${y+9}" font-size="11" fill="#182530">${esc(l)}</text>
+        <rect x="${leftW}" y="${y}" width="${pw.toFixed(1)}" height="8" fill="#4b5b66" opacity=".35"/>
+        <rect x="${leftW}" y="${y+11}" width="${aw.toFixed(1)}" height="8" fill="${actualArr[i]>plannedArr[i]?'#d1483a':'#c1893a'}"/>`;
+    });
+    return `<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}">${rows}</svg>`;
+  }
+  function barChartSimple(labels,values,width,color){
+    width=width||520; color=color||'#c1893a';
+    const max=Math.max(...values,1);
+    const rowH=28; const height=labels.length*rowH+8;
+    let rows='';
+    labels.forEach((l,i)=>{
+      const y=i*rowH+5;
+      const w=Math.max(0,values[i]/max*(width-140));
+      rows+=`<text x="0" y="${y+9}" font-size="11" fill="#182530">${esc(l)}</text>
+        <rect x="140" y="${y}" width="${w.toFixed(1)}" height="10" fill="${color}"/>
+        <text x="${145+w}" y="${y+9}" font-size="10" fill="#4b5b66">${fmtINR(values[i])}</text>`;
+    });
+    return `<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}">${rows}</svg>`;
+  }
+
+  // ---------------- EXPORT ----------------
+  function exportToExcel(){
+    if(typeof XLSX==='undefined'){ alert('Export library not loaded — check your internet connection and try again.'); return; }
+    const wb=XLSX.utils.book_new();
+    function addSheet(name,rows){ if(!rows.length) rows=[{note:'No data'}]; XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), name.slice(0,31)); }
+    addSheet('Income', state.income);
+    addSheet('Expenses', state.expenses);
+    addSheet('Transfers', state.transfers);
+    addSheet('Goals', state.goals);
+    addSheet('Goal Activity', state.goalTx);
+    addSheet('Assets', state.assets);
+    addSheet('Asset Activity', state.assetTx);
+    addSheet('Liabilities', state.liabilities);
+    addSheet('Liability Updates', state.liabilityTx);
+    addSheet('Allocation Plans', state.allocationVersions.map(v=>({effectiveMonth:v.effectiveMonth, plan:JSON.stringify(v.pct)})));
+    XLSX.writeFile(wb, 'income-allocation-tracker-export-'+todayDate()+'.xlsx');
+  }
+
+  // ---------------- RENDER ----------------
+  async function render(){
+    const app=document.getElementById('app');
+    if(!isLoggedIn()){ app.innerHTML=loginHTML(); bindLoginEvents(); return; }
+    app.innerHTML=`
+      <div class="app-header">
+        <div class="app-title">Income and allocation tracker<small>Household planning, goals &amp; net worth</small></div>
+        <div class="session-bar">${demoMode?'<span class="pill blue">Preview mode — nothing is saved</span>':`Signed in as <b>${esc(session.loggedInAs)}</b> (${esc(session.email)})`} &nbsp;·&nbsp; <span id="save-status" style="font-family:var(--mono);"></span> ${!demoMode?'&nbsp;·&nbsp;<button id="refresh-btn">Refresh</button>':''} &nbsp;·&nbsp; <button id="logout-btn">${demoMode?'Exit preview':'Sign out'}</button></div>
+      </div>
+      <div class="tabs">
+        ${['dashboard','analytics','goals','entries','networth','setup'].map(t=>`<button class="tab-btn ${state.activeTab===t?'active':''}" data-tab="${t}">${t==='networth'?'Net Worth':t.charAt(0).toUpperCase()+t.slice(1)}</button>`).join('')}
+      </div>
+      <div id="tab-content"></div>
+    `;
+    document.getElementById('logout-btn').addEventListener('click',()=>{
+      session.loggedInAs=null; session.accessToken=null; session.email=null; session.driveFileId=null; demoMode=false; state=null;
+      render();
+    });
+    const refreshBtn=document.getElementById('refresh-btn');
+    if(refreshBtn) refreshBtn.addEventListener('click', refreshFromDrive);
+    document.querySelectorAll('.tab-btn').forEach(b=>b.addEventListener('click',()=>{ state.activeTab=b.dataset.tab; saveState(); renderTabContent(); }));
+    renderTabContent();
+  }
+  function renderTabContent(){
+    document.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active', b.dataset.tab===state.activeTab));
+    const c=document.getElementById('tab-content');
+    if(state.activeTab==='dashboard') c.innerHTML=dashboardHTML();
+    else if(state.activeTab==='analytics') c.innerHTML=analyticsHTML();
+    else if(state.activeTab==='goals') c.innerHTML=goalsHTML();
+    else if(state.activeTab==='entries') c.innerHTML=entriesHTML();
+    else if(state.activeTab==='networth') c.innerHTML=netWorthHTML();
+    else c.innerHTML=setupHTML();
+    bindTabEvents();
+  }
+
+  // ---------------- LOGIN ----------------
+  function sampleDemoState(){
+    const s=defaultState();
+    const month=currentRealMonth();
+    s.income=[{id:'d1',date:month+'-01',person:'Eshan',source:'Salary',account:'HDFC Card',amount:100000},{id:'d2',date:month+'-01',person:'Kriti',source:'Salary',account:'Net Banking',amount:80000}];
+    s.goals=[{id:'g1',name:'Trip 2027',targetAmount:500000,account:'Net Banking'}];
+    s.allocationVersions=[{effectiveMonth:month,pct:{Eshan:{'cat:Investment':20,'cat:Monthly Expenses':25,'cat:EMI':12.5,'cat:Dad Payment':16.67,'cat:Miscellaneous':4.2,'goal:g1':21.63},Kriti:{'cat:Investment':20,'cat:Monthly Expenses':25,'cat:EMI':12.5,'cat:Dad Payment':16.67,'cat:Miscellaneous':4.2,'goal:g1':21.63}}}];
+    s.expenses=[{id:'d3',date:month+'-03',person:'Eshan',category:'Monthly Expenses',description:'Electricity bill',account:'HDFC Card',amount:4500,irregular:false}];
+    s.goalTx=[{id:'d4',goalId:'g1',date:month+'-02',person:'Eshan',type:'contribution',amount:15000},{id:'d5',goalId:'g1',date:month+'-02',person:'Kriti',type:'contribution',amount:12000}];
+    s.assets=[{id:'a1',name:'Zerodha Equity',type:'Equity'}];
+    s.assetTx=[{id:'d6',assetId:'a1',date:month+'-01',kind:'contribution',amount:50000},{id:'d7',assetId:'a1',date:month+'-01',kind:'valuation',amount:54000}];
+    s.liabilities=[{id:'l1',name:'Car Loan',type:'Loan',openingBalance:300000,openingDate:month+'-01'}];
+    return s;
+  }
+  function loginHTML(){
+    const needsMapping = session.email && state && !state.auth.personByEmail[session.email];
+    if(needsMapping){
+      return `<div class="login-wrap">
+        <div class="app-title" style="margin-bottom:18px;">Income and allocation tracker</div>
+        <div class="card">
+          <h3>Who is this?</h3>
+          <div style="font-size:13px;color:var(--ink-soft);margin-bottom:12px;">Signed in as ${esc(session.email)}. First time here — tell us which household member this Google account belongs to.</div>
+          <div class="form-grid" style="grid-template-columns:1fr;">
+            <div><label>Person</label><select id="map-person">${state.people.map(p=>`<option value="${esc(p)}">${esc(p)}</option>`).join('')}</select></div>
+          </div>
+          <div style="margin-top:14px;"><button class="btn" id="map-submit">Continue</button></div>
+        </div>
+      </div>`;
+    }
+    return `
+      <div class="login-wrap">
+        <div class="app-title" style="margin-bottom:8px;">Income and allocation tracker</div>
+        <div style="font-size:13px;color:var(--ink-soft);margin-bottom:18px;">Household planning, goals &amp; net worth</div>
+        <div class="card">
+          <h3>Sign in</h3>
+          <div style="font-size:13px;color:var(--ink-soft);">Sign in with the Google account you use for this household's shared data file.</div>
+          <div class="g-signin-btn"><button class="btn" id="google-signin-btn">Sign in with Google</button></div>
+          <div id="login-error" style="color:var(--bad);font-size:12px;"></div>
+          <div class="login-note">Your data is stored as a file in Google Drive, shared between household members — not stored by this app itself.</div>
+        </div>
+    `;
+  }
+  function bindLoginEvents(){
+    const mapBtn=document.getElementById('map-submit');
+    if(mapBtn){
+      mapBtn.addEventListener('click', async()=>{
+        const person=document.getElementById('map-person').value;
+        state.auth.personByEmail[session.email]=person;
+        session.loggedInAs=person;
+        await saveState();
+        render();
+      });
+      return;
+    }
+    const signinBtn=document.getElementById('google-signin-btn');
+    if(signinBtn) signinBtn.addEventListener('click', async()=>{
+      const errEl=document.getElementById('login-error');
+      try{
+        await requestToken();
+        session.email=await fetchUserEmail();
+        await loadStateFromDrive();
+        const mapped=state.auth.personByEmail[session.email];
+        if(mapped) session.loggedInAs=mapped;
+        render();
+      }catch(e){ errEl.textContent='Sign-in failed or was cancelled. Try again.'; }
+    });
+  }
+
+  // ---------------- DASHBOARD ----------------
+  function dashboardHTML(){
+    const month=state.currentMonth;
+    const income=monthIncomeByPerson(month);
+    const alloc=allocationForMonth(month);
+    const items=planItems();
+
+    const totalIncome=Object.values(income).reduce((a,b)=>a+b,0);
+    let totalPlanned=0, totalActual=0;
+    state.people.forEach(p=>{
+      const pIncome=income[p]||0;
+      items.forEach(item=>{ const {planned,actual}=planItemPlannedActual(item,p,month,pIncome); totalPlanned+=planned; totalActual+=actual; });
+    });
+    const totalVariance=totalActual-totalPlanned;
+
+    let peopleCards=state.people.map(p=>{
+      const pIncome=income[p]||0;
+      let rows='';
+      items.forEach(item=>{
+        const {pct,planned,actual}=planItemPlannedActual(item,p,month,pIncome);
+        const variance=actual-planned;
+        const varPct=planned>0?(variance/planned*100):(actual>0?100:0);
+        const over=actual>planned;
+        const maxBar=Math.max(planned,actual,1);
+        rows+=`
+          <div class="cat-row ${item.kind==='goal'?'goal-plan':''}">
+            <div class="cat-top">
+              <div class="cat-name">${esc(item.label)}${item.kind==='goal'?' <span class="pill blue">goal</span>':''} <span style="color:var(--ink-soft);font-weight:400;">(${pct}%)</span></div>
+              <div class="cat-amts">planned <b>${fmtINR(planned)}</b> &nbsp;·&nbsp; actual <b>${fmtINR(actual)}</b></div>
+            </div>
+            <div class="bar-track">
+              <div class="bar-planned" style="width:${Math.min(100,planned/maxBar*100)}%"></div>
+              <div class="bar-actual ${over?'over':''}" style="width:${Math.min(100,actual/maxBar*100)}%"></div>
+            </div>
+            <div class="cat-variance ${over?'bad':(actual>0?'good':'')}">${planned>0||actual>0?(over?'+':'')+fmtINR(variance)+' ('+(varPct>=0?'+':'')+varPct.toFixed(0)+'%)':'—'}</div>
+          </div>`;
+      });
+      return `<div class="person-card"><div class="person-head"><div class="person-name">${esc(p)}</div><div class="person-income">income ${fmtINR(pIncome)}</div></div>${rows}</div>`;
+    }).join('');
+
+    let notes=[];
+    state.people.forEach(p=>{
+      const pIncome=income[p]||0;
+      items.forEach(item=>{
+        const {planned,actual}=planItemPlannedActual(item,p,month,pIncome);
+        if(planned>0){ const varPct=(actual-planned)/planned*100; if(varPct>15) notes.push(`<li><b>${esc(item.label)}</b> (${esc(p)}) exceeded plan by ${varPct.toFixed(0)}%.</li>`); }
+      });
+    });
+    const irregularThisMonth=state.expenses.filter(e=>e.irregular && e.date.slice(0,7)===month);
+    const goalWithdrawThisMonth=state.goalTx.filter(t=>t.type==='withdrawal' && t.date.slice(0,7)===month);
+    const irregularTotal=irregularThisMonth.reduce((s,e)=>s+Number(e.amount),0)+goalWithdrawThisMonth.reduce((s,t)=>s+Number(t.amount),0);
+    if(irregularThisMonth.length||goalWithdrawThisMonth.length) notes.push(`<li>${irregularThisMonth.length+goalWithdrawThisMonth.length} irregular item(s) recorded this month, totalling ${fmtINR(irregularTotal)} — kept out of variance, see below.</li>`);
+    if(!alloc) notes.unshift(`<li>No allocation plan set for this month yet — set one up in <b>Setup</b>.</li>`);
+    const pending=pendingRecurringTransfers();
+    if(pending.length) notes.unshift(`<li>${pending.length} recurring transfer(s) waiting to be logged this month — see <b>Goals</b> tab.</li>`);
+
+    const irregularRows=[...irregularThisMonth.map(e=>({date:e.date,person:e.person,label:e.category+' — '+(e.description||''),amount:e.amount,reason:e.reason})),
+      ...goalWithdrawThisMonth.map(t=>{const g=state.goals.find(x=>x.id===t.goalId); return {date:t.date,person:t.person,label:'Goal withdrawal — '+(g?g.name:'?'),amount:t.amount,reason:t.reason};})];
+
+    return `
+      <div class="month-nav"><button data-shift="-1">&lsaquo;</button><div class="month-label">${monthLabel(month)}</div><button data-shift="1">&rsaquo;</button></div>
+      <div class="summary-row">
+        <div class="stat"><div class="label">Household income</div><div class="value">${fmtINR(totalIncome)}</div></div>
+        <div class="stat"><div class="label">Planned outflow</div><div class="value">${fmtINR(totalPlanned)}</div></div>
+        <div class="stat"><div class="label">Actual outflow</div><div class="value">${fmtINR(totalActual)}</div></div>
+        <div class="stat"><div class="label">Irregular spend</div><div class="value ${irregularTotal>0?'bad':''}">${fmtINR(irregularTotal)}</div></div>
+      </div>
+      <div class="people-grid">${peopleCards}</div>
+      <div class="card" style="margin-top:16px;"><h3>Notes</h3>${notes.length?'<ul class="notes">'+notes.join('')+'</ul>':'<div class="empty">Nothing unusual this month.</div>'}</div>
+      <div class="card"><h3>Irregular activity this month</h3>
+        ${irregularRows.length? `<table><thead><tr><th>Date</th><th>Person</th><th>What</th><th>Reason</th><th class="amt">Amount</th></tr></thead><tbody>
+          ${irregularRows.map(r=>`<tr class="irregular"><td>${esc(r.date)}</td><td>${esc(r.person)}</td><td>${esc(r.label)}</td><td>${esc(r.reason||'—')}</td><td class="amt">${fmtINR(r.amount)}</td></tr>`).join('')}
+        </tbody></table>` : '<div class="empty">No irregular activity this month.</div>'}
+      </div>
+    `;
+  }
+
+  // ---------------- ANALYTICS ----------------
+  function rangeBounds(){
+    const mode=state.analyticsRange.mode;
+    const ref=state.currentMonth;
+    if(mode==='month') return {start:ref,end:ref};
+    if(mode==='quarter') return quarterBounds(ref);
+    if(mode==='half') return halfBounds(ref);
+    if(mode==='fy') return fyBounds(ref);
+    return {start:state.analyticsRange.start||ref, end:state.analyticsRange.end||ref};
+  }
+  function rangeSummary(start,end){
+    const months=monthsBetween(start,end);
+    const items=planItems();
+    let incomeTotal=0, plannedTotal=0, actualTotal=0;
+    let itemPlanned={}, itemActual={}; items.forEach(i=>{itemPlanned[i.key]=0;itemActual[i.key]=0;});
+    let personActual={}; state.people.forEach(p=>personActual[p]=0);
+    let trend=[], irregularTrend=[];
+    months.forEach(m=>{
+      const inc=monthIncomeByPerson(m);
+      const incSum=Object.values(inc).reduce((a,b)=>a+b,0);
+      incomeTotal+=incSum;
+      let mPlanned=0,mActual=0;
+      state.people.forEach(p=>{
+        const pInc=inc[p]||0;
+        items.forEach(item=>{
+          const {planned,actual}=planItemPlannedActual(item,p,m,pInc);
+          itemPlanned[item.key]+=planned; itemActual[item.key]+=actual;
+          personActual[p]+=actual;
+          mPlanned+=planned; mActual+=actual;
+        });
+      });
+      plannedTotal+=mPlanned; actualTotal+=mActual;
+      trend.push({label:monthLabel(m),actual:mActual,planned:mPlanned});
+      const irrExp=state.expenses.filter(e=>e.irregular && e.date.slice(0,7)===m).reduce((s,e)=>s+Number(e.amount),0);
+      const irrGoal=state.goalTx.filter(t=>t.type==='withdrawal' && t.date.slice(0,7)===m).reduce((s,t)=>s+Number(t.amount),0);
+      irregularTrend.push({label:monthLabel(m), value:irrExp+irrGoal});
+    });
+    let irregular=[]; let irregularByLabel={};
+    state.expenses.filter(e=>e.irregular && months.includes(e.date.slice(0,7))).forEach(e=>{
+      irregular.push({date:e.date,person:e.person,label:e.category+' — '+(e.description||''),amount:e.amount,reason:e.reason});
+      irregularByLabel[e.category]=(irregularByLabel[e.category]||0)+Number(e.amount);
+    });
+    state.goalTx.filter(t=>t.type==='withdrawal' && months.includes(t.date.slice(0,7))).forEach(t=>{
+      const g=state.goals.find(x=>x.id===t.goalId); const lbl='Goal withdrawal — '+(g?g.name:'?');
+      irregular.push({date:t.date,person:t.person,label:lbl,amount:t.amount,reason:t.reason});
+      irregularByLabel[lbl]=(irregularByLabel[lbl]||0)+Number(t.amount);
+    });
+    const assetSeries=months.map(m=>{const cutoff=m+'-31'; return {label:monthLabel(m), invested:totalInvestedAsOf(cutoff), current:totalCurrentValueAsOf(cutoff)};});
+    const contribSeries=months.map(m=>({label:monthLabel(m), value: state.assetTx.filter(t=>t.kind==='contribution'&&t.date.slice(0,7)===m).reduce((s,t)=>s+Number(t.amount),0)}));
+    return {months,items,incomeTotal,plannedTotal,actualTotal,itemPlanned,itemActual,personActual,trend,irregular,irregularTrend,irregularByLabel,assetSeries,contribSeries};
+  }
+  function analyticsHTML(){
+    const {start,end}=rangeBounds();
+    const s=rangeSummary(start,end);
+    const itemLabels=s.items.map(i=>i.label);
+    const pieData=s.items.map((it,i)=>({label:it.label,value:s.itemActual[it.key]||0,color:CHART_COLORS[i%CHART_COLORS.length]}));
+    const personLabels=state.people;
+    const personPie=personLabels.map((p,i)=>({label:p,value:s.personActual[p]||0,color:CHART_COLORS[i%CHART_COLORS.length]}));
+    const irregularPie=Object.keys(s.irregularByLabel).map((k,i)=>({label:k,value:s.irregularByLabel[k],color:CHART_COLORS[i%CHART_COLORS.length]}));
+    const mode=state.analyticsRange.mode;
+
+    let fyReport='';
+    if(mode==='fy'){
+      const catAnnual={};
+      state.categories.forEach(c=>{ catAnnual[c]=state.expenses.filter(e=>!e.irregular&&e.category===c&&s.months.includes(e.date.slice(0,7))).reduce((sum,e)=>sum+Number(e.amount),0); });
+      const nwStart=netWorthAsOf(shiftMonth(start,-1)+'-31');
+      const nwEnd=netWorthAsOf(end+'-31');
+      const investedInFY=state.assetTx.filter(t=>t.kind==='contribution'&&s.months.includes(t.date.slice(0,7))).reduce((sum,t)=>sum+Number(t.amount),0);
+      fyReport=`
+        <div class="card no-print" style="text-align:right;"><button class="btn secondary" id="print-report-btn">Print FY report</button></div>
+        <div class="card">
+          <h3>Financial Year Report — ${monthLabel(start)} to ${monthLabel(end)}</h3>
+          <div class="summary-row">
+            <div class="stat"><div class="label">Total income</div><div class="value">${fmtINR(s.incomeTotal)}</div></div>
+            <div class="stat"><div class="label">Total invested (assets)</div><div class="value">${fmtINR(investedInFY)}</div></div>
+            <div class="stat"><div class="label">Net worth start of FY</div><div class="value">${fmtINR(nwStart)}</div></div>
+            <div class="stat"><div class="label">Net worth end of FY</div><div class="value ${nwEnd>=nwStart?'good':'bad'}">${fmtINR(nwEnd)}</div></div>
+          </div>
+          <h4>Category-wise annual spend</h4>
+          <table><thead><tr><th>Category</th><th class="amt">Annual actual</th></tr></thead><tbody>
+            ${state.categories.map(c=>`<tr><td>${esc(c)}</td><td class="amt">${fmtINR(catAnnual[c])}</td></tr>`).join('')}
+          </tbody></table>
+        </div>
+      `;
+    }
+
+    return `
+      ${mode!=='custom'? `<div class="month-nav"><button data-shift="-1">&lsaquo;</button><div class="month-label">${monthLabel(state.currentMonth)}</div><button data-shift="1">&rsaquo;</button></div>`:''}
+      <div class="filter-bar">
+        <div><label>View</label>
+          <select id="range-mode">
+            <option value="month" ${mode==='month'?'selected':''}>Month</option>
+            <option value="quarter" ${mode==='quarter'?'selected':''}>FY Quarter</option>
+            <option value="half" ${mode==='half'?'selected':''}>Half year</option>
+            <option value="fy" ${mode==='fy'?'selected':''}>Financial year (Apr–Mar)</option>
+            <option value="custom" ${mode==='custom'?'selected':''}>Custom range</option>
+          </select>
+        </div>
+        ${mode==='custom'? `
+          <div><label>From</label><input type="month" id="range-start" value="${state.analyticsRange.start||start}"></div>
+          <div><label>To</label><input type="month" id="range-end" value="${state.analyticsRange.end||end}"></div>
+        ` : `<div style="align-self:center;font-family:var(--mono);font-size:13px;color:var(--ink-soft);padding-bottom:8px;">${monthLabel(start)} – ${monthLabel(end)}</div>`}
+      </div>
+
+      <div class="summary-row">
+        <div class="stat"><div class="label">Income</div><div class="value">${fmtINR(s.incomeTotal)}</div></div>
+        <div class="stat"><div class="label">Planned</div><div class="value">${fmtINR(s.plannedTotal)}</div></div>
+        <div class="stat"><div class="label">Actual</div><div class="value">${fmtINR(s.actualTotal)}</div></div>
+        <div class="stat"><div class="label">Variance</div><div class="value ${s.actualTotal>s.plannedTotal?'bad':'good'}">${s.actualTotal>s.plannedTotal?'+':''}${fmtINR(s.actualTotal-s.plannedTotal)}</div></div>
+      </div>
+
+      <div class="chart-row">
+        <div class="card"><h4>Spend by category &amp; goal</h4>${pieChart(pieData)}
+          <div class="legend">${pieData.map(d=>`<span><i style="background:${d.color}"></i>${esc(d.label)} · ${fmtINR(d.value)}</span>`).join('')}</div>
+        </div>
+        <div class="card"><h4>Spend by person</h4>${pieChart(personPie)}
+          <div class="legend">${personPie.map(d=>`<span><i style="background:${d.color}"></i>${esc(d.label)} · ${fmtINR(d.value)}</span>`).join('')}</div>
+        </div>
+      </div>
+
+      <div class="card"><h4>Planned vs actual (categories &amp; goals)</h4>${groupedBar(itemLabels,s.items.map(it=>s.itemPlanned[it.key]||0),s.items.map(it=>s.itemActual[it.key]||0))}
+        <div class="legend"><span><i style="background:#4b5b66;opacity:.35"></i>Planned</span><span><i style="background:#c1893a"></i>Actual (on/under plan)</span><span><i style="background:#d1483a"></i>Actual (over plan)</span></div>
+      </div>
+
+      <div class="card"><h4>Monthly trend (actual spend)</h4>${s.trend.length>1? lineChart(s.trend.map(t=>({label:t.label,value:t.actual})),520,150,'#3167ad') : '<div class="empty">Select a range spanning more than one month to see a trend.</div>'}</div>
+
+      <div class="card"><h3>Irregular spend</h3>
+        <div class="chart-row">
+          <div><h4>Trend</h4>${s.irregularTrend.length>1? lineChart(s.irregularTrend,480,140,'#d1483a') : '<div class="empty">Spans more than one month to show a trend.</div>'}</div>
+          <div><h4>Breakdown</h4>${irregularPie.length? pieChart(irregularPie,150)+`<div class="legend">${irregularPie.map(d=>`<span><i style="background:${d.color}"></i>${esc(d.label)} · ${fmtINR(d.value)}</span>`).join('')}</div>` : '<div class="empty">No irregular activity in this range.</div>'}</div>
+        </div>
+        ${s.irregular.length? `<table style="margin-top:12px;"><thead><tr><th>Date</th><th>Person</th><th>What</th><th>Reason</th><th class="amt">Amount</th></tr></thead><tbody>
+          ${s.irregular.map(r=>`<tr class="irregular"><td>${esc(r.date)}</td><td>${esc(r.person)}</td><td>${esc(r.label)}</td><td>${esc(r.reason||'—')}</td><td class="amt">${fmtINR(r.amount)}</td></tr>`).join('')}
+        </tbody></table>` : ''}
+      </div>
+
+      <div class="card"><h3>Assets &amp; investments</h3>
+        <h4>Invested vs current value</h4>
+        ${s.assetSeries.length>1? lineChartMulti([
+          {label:'Invested',color:'#4b5b66',points:s.assetSeries.map(a=>({label:a.label,value:a.invested}))},
+          {label:'Current value',color:'#1f8f5f',points:s.assetSeries.map(a=>({label:a.label,value:a.current}))}
+        ]) : '<div class="empty">Spans more than one month to show a trend.</div>'}
+        <div class="legend"><span><i style="background:#4b5b66"></i>Invested</span><span><i style="background:#1f8f5f"></i>Current value</span></div>
+        <div class="divider"></div>
+        <h4>Gain / loss trend</h4>
+        ${s.assetSeries.length>1? lineChart(s.assetSeries.map(a=>({label:a.label,value:a.current-a.invested})),520,130,'#8a5bc4') : '<div class="empty">Spans more than one month to show a trend.</div>'}
+        <div class="divider"></div>
+        <h4>Contributions by month</h4>
+        ${s.contribSeries.some(c=>c.value>0)? barChartSimple(s.contribSeries.map(c=>c.label), s.contribSeries.map(c=>c.value), 520, '#3167ad') : '<div class="empty">No contributions logged in this range.</div>'}
+      </div>
+
+      ${fyReport}
+    `;
+  }
+
+  // ---------------- GOALS ----------------
+  function goalsHTML(){
+    const acctOpts=state.accounts.map(a=>`<option value="${esc(a.name)}">${esc(a.name)}</option>`).join('');
+    const assetOpts=state.assets.map(a=>`<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('');
+    const month=state.currentMonth;
+    const pending=pendingRecurringTransfers();
+
+    const recurringBanner = state.recurringTransfers.length ? `
+      <div class="card">
+        <h3>Recurring transfers <span class="pill blue">SIP-style</span></h3>
+        ${pending.length? pending.map(r=>{
+          const g=state.goals.find(x=>x.id===r.goalId), a=state.assets.find(x=>x.id===r.assetId);
+          return `<div class="banner blue banner-row">
+            <span>${esc(r.label||'Transfer')}: ${fmtINR(r.amount)} from <b>${esc(g?g.name:'?')}</b> to <b>${esc(a?a.name:'?')}</b> (${esc(r.person)}) — not yet logged for ${monthLabel(month)}.</span>
+            <span><button class="btn small" data-log-recurring="${r.id}">Log now</button> <button class="btn secondary small" data-skip-recurring="${r.id}">Skip this month</button></span>
+          </div>`;
+        }).join('') : `<div class="empty">All recurring transfers are logged for ${monthLabel(month)}.</div>`}
+        <div class="divider"></div>
+        <table><thead><tr><th>Label</th><th>Goal → Asset</th><th>Person</th><th class="amt">Amount</th><th></th></tr></thead><tbody>
+          ${state.recurringTransfers.map(r=>{
+            const g=state.goals.find(x=>x.id===r.goalId), a=state.assets.find(x=>x.id===r.assetId);
+            return `<tr><td>${esc(r.label||'—')}</td><td>${esc(g?g.name:'?')} → ${esc(a?a.name:'?')}</td><td>${esc(r.person)}</td><td class="amt">${fmtINR(r.amount)}</td><td class="row-actions"><button data-del-recurring="${r.id}">Delete rule</button></td></tr>`;
+          }).join('')}
+        </tbody></table>
+      </div>` : '';
+
+    const goalCards=state.goals.map(g=>{
+      const bal=goalBalance(g.id);
+      const pct=Math.min(100,g.targetAmount>0?bal/g.targetAmount*100:0);
+      const alloc=allocationForMonth(month);
+      const income=monthIncomeByPerson(month);
+      const monthlyPlanned=state.people.reduce((sum,p)=>{
+        const pct2=(alloc&&alloc.pct[p]&&alloc.pct[p]['goal:'+g.id])||0;
+        return sum+(income[p]||0)*pct2/100;
+      },0);
+      const remaining=Math.max(0,g.targetAmount-bal);
+      const monthsLeft=monthlyPlanned>0? Math.ceil(remaining/monthlyPlanned) : null;
+      const tx=goalTxForGoal(g.id).sort((a,b)=>b.date.localeCompare(a.date));
+      const editingGoal=state._editGoalId===g.id;
+
+      const goalHeader = editingGoal ? `
+        <div class="form-grid">
+          <div><label>Name</label><input type="text" data-edit-goal-field="name" value="${esc(g.name)}"></div>
+          <div><label>Target</label><input type="number" data-edit-goal-field="targetAmount" value="${g.targetAmount}"></div>
+          <div><label>Account</label><select data-edit-goal-field="account">${state.accounts.map(a=>`<option ${a.name===g.account?'selected':''}>${esc(a.name)}</option>`).join('')}</select></div>
+          <div><button class="btn small" data-save-goal="${g.id}">Save</button> <button class="btn secondary small" data-cancel-edit-goal="1">Cancel</button></div>
+        </div>` : `
+        <div class="goal-top">
+          <div class="goal-name">${esc(g.name)}</div>
+          <div class="row-actions"><button data-edit-goal="${g.id}">Edit</button><button data-del-goal="${g.id}">Delete goal</button></div>
+        </div>
+        <div class="goal-sub">${fmtINR(bal)} saved of ${fmtINR(g.targetAmount)} target · parked in ${esc(g.account||'—')}${monthsLeft!=null?' · ~'+monthsLeft+' more months at current planned pace':''}</div>
+        <div class="progress-track"><div class="progress-fill ${pct>=100?'done':''}" style="width:${pct}%"></div></div>
+        <div style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">Planned monthly contribution set in Setup → Allocation plan (currently ${fmtINR(monthlyPlanned)}/mo combined).</div>`;
+
+      return `
+        <div class="goal-card">
+          ${goalHeader}
+          <div class="form-grid" style="margin-top:8px;">
+            <div><label>Date</label><input type="date" data-goaltx-date="${g.id}" value="${todayDate()}"></div>
+            <div><label>Person</label><select data-goaltx-person="${g.id}">${state.people.map(p=>`<option value="${esc(p)}">${esc(p)}</option>`).join('')}</select></div>
+            <div><label>Type</label><select data-goaltx-type="${g.id}"><option value="contribution">Contribution</option><option value="withdrawal">Withdrawal</option><option value="transfer">Transfer to asset</option></select></div>
+            <div class="goaltx-asset-field" data-goaltx-assetfield="${g.id}" style="display:none;"><label>Destination asset</label><select data-goaltx-asset="${g.id}">${assetOpts}</select></div>
+            <div><label>Amount</label><input type="number" min="0" data-goaltx-amount="${g.id}"></div>
+            <div><label>Reason (required for withdrawal)</label><input type="text" data-goaltx-reason="${g.id}" placeholder="e.g. Weekend trip"></div>
+            <div><button class="btn small" data-goaltx-submit="${g.id}">Log</button></div>
+          </div>
+          ${!state.assets.length?'<div style="font-size:11px;color:var(--ink-soft);margin-top:4px;">Add an asset in Net Worth first to enable transfers.</div>':''}
+          ${tx.length? `<table style="margin-top:12px;"><thead><tr><th>Date</th><th>Person</th><th>Type</th><th>Reason</th><th class="amt">Amount</th><th></th></tr></thead><tbody>
+            ${tx.map(t=>{
+              const editingTx=state._editRow===t.id;
+              if(editingTx){
+                return `<tr><td><input type="date" data-edit-field="date" value="${esc(t.date)}"></td>
+                  <td><select data-edit-field="person">${state.people.map(p=>`<option ${p===t.person?'selected':''}>${esc(p)}</option>`).join('')}</select></td>
+                  <td>${t.type}</td><td><input type="text" data-edit-field="reason" value="${esc(t.reason||'')}"></td>
+                  <td><input type="number" data-edit-field="amount" value="${t.amount}" style="text-align:right;"></td>
+                  <td class="row-actions"><button data-save-goaltx="${t.id}">Save</button><button data-cancel-edit="1">Cancel</button></td></tr>`;
+              }
+              const asset=t.toAssetId?state.assets.find(a=>a.id===t.toAssetId):null;
+              return `<tr class="${t.type==='withdrawal'?'irregular':(t.type==='transfer'?'transfer-row':'')}"><td>${esc(t.date)}</td><td>${esc(t.person)}</td><td>${t.type}${asset?' → '+esc(asset.name):''}</td><td>${esc(t.reason||'—')}</td><td class="amt">${t.type!=='contribution'?'-':''}${fmtINR(t.amount)}</td>
+                <td class="row-actions"><button data-edit-goaltx="${t.id}" ${canEdit(t.person)?'':'disabled'}>Edit</button><button data-del-goaltx="${t.id}" data-goaltx-transferid="${t.transferId||''}" ${canEdit(t.person)?'':'disabled'}>Delete</button></td></tr>`;
+            }).join('')}
+          </tbody></table>` : '<div class="empty">No activity logged for this goal yet.</div>'}
+        </div>`;
+    }).join('');
+
+    return `
+      <div class="banner">Goals now share the same 100% allocation pool as your spend categories — set each goal's monthly % in <b>Setup → Allocation plan</b>.</div>
+      ${recurringBanner}
+      <div class="card">
+        <h3>Add a savings goal</h3>
+        <form id="goal-form" class="form-grid">
+          <div><label>Name</label><input type="text" name="name" placeholder="e.g. Trip 2027" required></div>
+          <div><label>Target amount</label><input type="number" name="target" min="0" required></div>
+          <div><label>Parked in account</label><select name="account">${acctOpts}</select></div>
+          <div><button class="btn" type="submit">Add goal</button></div>
+        </form>
+      </div>
+      ${state.goals.length && state.assets.length ? `
+      <div class="card">
+        <h3>Set up a recurring transfer <span class="pill blue">SIP-style</span></h3>
+        <form id="recurring-form" class="form-grid">
+          <div><label>From goal</label><select name="goalId">${state.goals.map(g=>`<option value="${esc(g.id)}">${esc(g.name)}</option>`).join('')}</select></div>
+          <div><label>To asset</label><select name="assetId">${assetOpts}</select></div>
+          <div><label>Person</label><select name="person">${state.people.map(p=>`<option value="${esc(p)}">${esc(p)}</option>`).join('')}</select></div>
+          <div><label>Monthly amount</label><input type="number" min="0" name="amount" required></div>
+          <div><label>Label</label><input type="text" name="label" placeholder="e.g. Gold SIP"></div>
+          <div><button class="btn" type="submit">Add rule</button></div>
+        </form>
+      </div>` : ''}
+      ${goalCards || '<div class="empty">No goals yet — add one above.</div>'}
+    `;
+  }
+
+  // ---------------- ENTRIES ----------------
+  function entriesHTML(){
+    const month=state.currentMonth;
+    const incomeRows=state.income.filter(e=>e.date.slice(0,7)===month).sort((a,b)=>a.date.localeCompare(b.date));
+    const expenseRows=state.expenses.filter(e=>e.date.slice(0,7)===month).sort((a,b)=>a.date.localeCompare(b.date));
+    const transferRows=state.transfers.filter(e=>e.date.slice(0,7)===month).sort((a,b)=>a.date.localeCompare(b.date));
+
+    const peopleOpts=state.people.map(p=>`<option value="${esc(p)}" ${p===session.loggedInAs?'selected':''}>${esc(p)}</option>`).join('');
+    const catOpts=state.categories.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
+    const acctOpts=state.accounts.map(a=>`<option value="${esc(a.name)}">${esc(a.name)}</option>`).join('');
+
+    return `
+      <div class="month-nav"><button data-shift="-1">&lsaquo;</button><div class="month-label">${monthLabel(month)}</div><button data-shift="1">&rsaquo;</button></div>
+
+      <div class="card"><h3>Add income</h3>
+        <form id="income-form" class="form-grid">
+          <div><label>Date</label><input type="date" name="date" required value="${month}-01"></div>
+          <div><label>Person</label><select name="person">${peopleOpts}</select></div>
+          <div><label>Source</label><input type="text" name="source" placeholder="e.g. Salary, Business" required></div>
+          <div><label>Account</label><select name="account">${acctOpts}</select></div>
+          <div><label>Amount</label><input type="number" min="0" name="amount" required></div>
+          <div><button class="btn" type="submit">Add income</button></div>
+        </form>
+      </div>
+
+      <div class="card"><h3>Add expense</h3>
+        <form id="expense-form" class="form-grid">
+          <div><label>Date</label><input type="date" name="date" required value="${month}-01"></div>
+          <div><label>Paid by</label><select name="person">${peopleOpts}</select></div>
+          <div><label>Category</label><select name="category">${catOpts}</select></div>
+          <div><label>Description</label><input type="text" name="description" placeholder="e.g. Electricity bill"></div>
+          <div><label>Account</label><select name="account">${acctOpts}</select></div>
+          <div><label>Amount</label><input type="number" min="0" name="amount" required></div>
+          <div class="checkbox-row" style="align-self:center;"><input type="checkbox" id="expense-irregular" name="irregular"><label style="margin:0;" for="expense-irregular">Irregular / one-off</label></div>
+          <div><label>Reason (if irregular)</label><input type="text" name="reason" placeholder="Required if irregular"></div>
+          <div><button class="btn" type="submit">Add expense</button></div>
+        </form>
+      </div>
+
+      <div class="card"><h3>Transfer between accounts <span class="pill">cash / reimbursements</span></h3>
+        <form id="transfer-form" class="form-grid">
+          <div><label>Date</label><input type="date" name="date" required value="${month}-01"></div>
+          <div><label>Person</label><select name="person">${peopleOpts}</select></div>
+          <div><label>From account</label><select name="fromAccount">${acctOpts}</select></div>
+          <div><label>To account</label><select name="toAccount">${acctOpts}</select></div>
+          <div><label>Amount</label><input type="number" min="0" name="amount" required></div>
+          <div><label>Note</label><input type="text" name="note" placeholder="e.g. Cash back from friend"></div>
+          <div><button class="btn" type="submit">Add transfer</button></div>
+        </form>
+      </div>
+
+      <div class="card"><h3>Income this month</h3>${incomeRows.length? incomeTable(incomeRows) : '<div class="empty">No income entries yet for this month.</div>'}</div>
+      <div class="card"><h3>Expenses this month</h3>${expenseRows.length? expenseTable(expenseRows) : '<div class="empty">No expense entries yet for this month.</div>'}</div>
+      <div class="card"><h3>Transfers this month</h3>${transferRows.length? transferTable(transferRows) : '<div class="empty">No transfers yet for this month.</div>'}</div>
+
+      <div class="card">
+        <h3>Search all records</h3>
+        <div class="form-grid">
+          <div><label>Text (description/source/reason)</label><input type="text" id="search-q" placeholder="e.g. electricity"></div>
+          <div><label>Person</label><select id="search-person"><option value="">Any</option>${state.people.map(p=>`<option value="${esc(p)}">${esc(p)}</option>`).join('')}</select></div>
+          <div><label>Type</label><select id="search-type"><option value="">Any</option><option value="income">Income</option><option value="expense">Expense</option><option value="transfer">Transfer</option></select></div>
+          <div><label>Category</label><select id="search-category"><option value="">Any</option>${state.categories.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('')}</select></div>
+          <div><label>Account</label><select id="search-account"><option value="">Any</option>${state.accounts.map(a=>`<option value="${esc(a.name)}">${esc(a.name)}</option>`).join('')}</select></div>
+          <div><label>From date</label><input type="date" id="search-from"></div>
+          <div><label>To date</label><input type="date" id="search-to"></div>
+          <div><label>Min amount</label><input type="number" id="search-min"></div>
+          <div><label>Max amount</label><input type="number" id="search-max"></div>
+          <div><button class="btn secondary" id="search-btn">Search</button></div>
+        </div>
+        <div id="search-results" style="margin-top:14px;"></div>
+      </div>
+    `;
+  }
+  function incomeTable(rows){
+    return `<table><thead><tr><th>Date</th><th>Person</th><th>Source</th><th>Account</th><th class="amt">Amount</th><th></th></tr></thead><tbody>
+      ${rows.map(r=>{
+        const editing=state._editRow===r.id;
+        const own=canEdit(r.person);
+        if(editing){
+          return `<tr>
+            <td><input type="date" data-edit-field="date" value="${esc(r.date)}"></td>
+            <td><select data-edit-field="person">${state.people.map(p=>`<option ${p===r.person?'selected':''}>${esc(p)}</option>`).join('')}</select></td>
+            <td><input type="text" data-edit-field="source" value="${esc(r.source)}"></td>
+            <td><select data-edit-field="account">${state.accounts.map(a=>`<option ${a.name===r.account?'selected':''}>${esc(a.name)}</option>`).join('')}</select></td>
+            <td><input type="number" data-edit-field="amount" value="${r.amount}" style="text-align:right;"></td>
+            <td class="row-actions"><button data-save-income="${r.id}">Save</button><button data-cancel-edit="1">Cancel</button></td>
+          </tr>`;
+        }
+        return `<tr>
+          <td>${esc(r.date)}</td><td>${esc(r.person)}</td><td>${esc(r.source)}</td><td>${esc(r.account||'—')}</td>
+          <td class="amt">${fmtINR(r.amount)}</td>
+          <td class="row-actions"><button data-edit-income="${r.id}" ${own?'':'disabled'}>Edit</button><button data-del-income="${r.id}" ${own?'':'disabled'}>Delete</button></td>
+        </tr>`;
+      }).join('')}
+    </tbody></table>`;
+  }
+  function expenseTable(rows){
+    return `<table><thead><tr><th>Date</th><th>Paid by</th><th>Category</th><th>Description</th><th>Account</th><th class="amt">Amount</th><th></th></tr></thead><tbody>
+      ${rows.map(r=>{
+        const editing=state._editRow===r.id;
+        const own=canEdit(r.person);
+        if(editing){
+          return `<tr>
+            <td><input type="date" data-edit-field="date" value="${esc(r.date)}"></td>
+            <td><select data-edit-field="person">${state.people.map(p=>`<option ${p===r.person?'selected':''}>${esc(p)}</option>`).join('')}</select></td>
+            <td><select data-edit-field="category">${state.categories.map(c=>`<option ${c===r.category?'selected':''}>${esc(c)}</option>`).join('')}</select></td>
+            <td><input type="text" data-edit-field="description" value="${esc(r.description||'')}"></td>
+            <td><select data-edit-field="account">${state.accounts.map(a=>`<option ${a.name===r.account?'selected':''}>${esc(a.name)}</option>`).join('')}</select></td>
+            <td><input type="number" data-edit-field="amount" value="${r.amount}" style="text-align:right;"></td>
+            <td class="row-actions"><button data-save-expense="${r.id}">Save</button><button data-cancel-edit="1">Cancel</button></td>
+          </tr>`;
+        }
+        return `<tr class="${r.irregular?'irregular':''}">
+          <td>${esc(r.date)}</td><td>${esc(r.person)}</td><td>${esc(r.category)}${r.irregular?'<span class="flag-pill">irregular</span>':''}</td>
+          <td>${esc(r.description||'—')}${r.irregular&&r.reason?`<div style="font-size:11px;color:var(--ink-soft);">${esc(r.reason)}</div>`:''}</td>
+          <td>${esc(r.account||'—')}</td><td class="amt">${fmtINR(r.amount)}</td>
+          <td class="row-actions"><button data-edit-expense="${r.id}" ${own?'':'disabled'}>Edit</button><button data-del-expense="${r.id}" ${own?'':'disabled'}>Delete</button></td>
+        </tr>`;
+      }).join('')}
+    </tbody></table>`;
+  }
+  function transferTable(rows){
+    return `<table><thead><tr><th>Date</th><th>Person</th><th>From</th><th>To</th><th>Note</th><th class="amt">Amount</th><th></th></tr></thead><tbody>
+      ${rows.map(r=>`<tr><td>${esc(r.date)}</td><td>${esc(r.person)}</td><td>${esc(r.fromAccount)}</td><td>${esc(r.toAccount)}</td><td>${esc(r.note||'—')}</td><td class="amt">${fmtINR(r.amount)}</td>
+        <td class="row-actions"><button data-del-transfer="${r.id}" ${canEdit(r.person)?'':'disabled'}>Delete</button></td></tr>`).join('')}
+    </tbody></table>`;
+  }
+  function runSearch(){
+    const q=(document.getElementById('search-q').value||'').toLowerCase();
+    const person=document.getElementById('search-person').value;
+    const type=document.getElementById('search-type').value;
+    const category=document.getElementById('search-category').value;
+    const account=document.getElementById('search-account').value;
+    const from=document.getElementById('search-from').value;
+    const to=document.getElementById('search-to').value;
+    const min=document.getElementById('search-min').value;
+    const max=document.getElementById('search-max').value;
+    let results=[];
+    if(!type||type==='income') state.income.forEach(r=>results.push({kind:'income',date:r.date,person:r.person,text:r.source,category:'',account:r.account,amount:r.amount}));
+    if(!type||type==='expense') state.expenses.forEach(r=>results.push({kind:'expense',date:r.date,person:r.person,text:(r.category+' '+(r.description||'')+' '+(r.reason||'')),category:r.category,account:r.account,amount:r.amount}));
+    if(!type||type==='transfer') state.transfers.forEach(r=>results.push({kind:'transfer',date:r.date,person:r.person,text:(r.fromAccount+' to '+r.toAccount+' '+(r.note||'')),category:'',account:r.fromAccount,amount:r.amount}));
+    results=results.filter(r=>{
+      if(q && !r.text.toLowerCase().includes(q)) return false;
+      if(person && r.person!==person) return false;
+      if(category && r.category!==category) return false;
+      if(account && r.account!==account) return false;
+      if(from && r.date<from) return false;
+      if(to && r.date>to) return false;
+      if(min && Number(r.amount)<Number(min)) return false;
+      if(max && Number(r.amount)>Number(max)) return false;
+      return true;
+    }).sort((a,b)=>b.date.localeCompare(a.date));
+    const area=document.getElementById('search-results');
+    if(!results.length){ area.innerHTML='<div class="empty">No matching records.</div>'; return; }
+    area.innerHTML=`<table><thead><tr><th>Date</th><th>Type</th><th>Person</th><th>Detail</th><th>Account</th><th class="amt">Amount</th></tr></thead><tbody>
+      ${results.map(r=>`<tr><td>${esc(r.date)}</td><td>${esc(r.kind)}</td><td>${esc(r.person)}</td><td>${esc(r.text)}</td><td>${esc(r.account||'—')}</td><td class="amt">${fmtINR(r.amount)}</td></tr>`).join('')}
+    </tbody></table>`;
+  }
+
+  // ---------------- NET WORTH ----------------
+  function netWorthHTML(){
+    const totalAssets = state.assets.reduce((s,a)=>s+assetCurrentValue(a.id),0) + state.goals.reduce((s,g)=>s+goalBalance(g.id),0);
+    const totalLiabilities = state.liabilities.reduce((s,l)=>s+liabilityCurrentBalance(l),0);
+    const netWorth = totalAssets - totalLiabilities;
+
+    const assetRows = state.assets.map(a=>{
+      const invested=assetInvested(a.id), current=assetCurrentValue(a.id), gain=current-invested;
+      const editing=state._editAssetId===a.id;
+      const drift=accountDriftCheck(a);
+      if(editing){
+        return `<tr><td colspan="5">
+          <div class="form-grid">
+            <div><label>Name</label><input type="text" data-edit-asset-field="name" value="${esc(a.name)}"></div>
+            <div><label>Type</label><select data-edit-asset-field="type">${ASSET_TYPES.map(t=>`<option ${t===a.type?'selected':''}>${esc(t)}</option>`).join('')}</select></div>
+            <div><button class="btn small" data-save-asset="${a.id}">Save</button> <button class="btn secondary small" data-cancel-edit-asset="1">Cancel</button></div>
+          </div>
+        </td></tr>`;
+      }
+      return `<tr>
+        <td>${esc(a.name)}${drift?`<span class="warn-badge" title="Transactions suggest ~${fmtINR(drift.expected)}, last logged ${fmtINR(drift.logged)}">balance may need updating</span>`:''}<div style="font-size:11px;color:var(--ink-soft);">${esc(a.type)}</div></td>
+        <td class="amt">${fmtINR(invested)}</td>
+        <td class="amt">${fmtINR(current)}</td>
+        <td class="amt" style="color:${gain>=0?'var(--good)':'var(--bad)'};">${gain>=0?'+':''}${fmtINR(gain)}</td>
+        <td class="row-actions"><button data-edit-asset="${a.id}">Edit</button><button data-del-asset="${a.id}">Delete</button></td>
+      </tr>`;
+    }).join('');
+    const goalRows = state.goals.map(g=>`<tr>
+      <td>${esc(g.name)}<div style="font-size:11px;color:var(--ink-soft);">Goal fund</div></td>
+      <td class="amt">${fmtINR(goalBalance(g.id))}</td>
+      <td class="amt">${fmtINR(goalBalance(g.id))}</td>
+      <td class="amt">—</td>
+      <td></td>
+    </tr>`).join('');
+    const liabRows = state.liabilities.map(l=>{
+      const editing=state._editLiabilityId===l.id;
+      if(editing){
+        return `<tr><td colspan="4">
+          <div class="form-grid">
+            <div><label>Name</label><input type="text" data-edit-liab-field="name" value="${esc(l.name)}"></div>
+            <div><label>Type</label><select data-edit-liab-field="type">${LIABILITY_TYPES.map(t=>`<option ${t===l.type?'selected':''}>${esc(t)}</option>`).join('')}</select></div>
+            <div><label>Opening</label><input type="number" data-edit-liab-field="openingBalance" value="${l.openingBalance}"></div>
+            <div><button class="btn small" data-save-liability="${l.id}">Save</button> <button class="btn secondary small" data-cancel-edit-liab="1">Cancel</button></div>
+          </div>
+        </td></tr>`;
+      }
+      return `<tr>
+        <td>${esc(l.name)}<div style="font-size:11px;color:var(--ink-soft);">${esc(l.type)}</div></td>
+        <td class="amt">${fmtINR(l.openingBalance)}</td>
+        <td class="amt">${fmtINR(liabilityCurrentBalance(l))}</td>
+        <td class="row-actions"><button data-edit-liability="${l.id}">Edit</button><button data-del-liability="${l.id}">Delete</button></td>
+      </tr>`;
+    }).join('');
+
+    const assetOpts=state.assets.map(a=>`<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('');
+    const liabOpts=state.liabilities.map(l=>`<option value="${esc(l.id)}">${esc(l.name)}</option>`).join('');
+
+    const assetTxTables = state.assets.map(a=>{
+      const tx=assetTxFor(a.id).slice().reverse();
+      if(!tx.length) return '';
+      const deltas=assetValuationDeltas(a.id);
+      return `<h4 style="margin-top:14px;">${esc(a.name)} activity</h4>
+        <table><thead><tr><th>Date</th><th>Type</th><th class="amt">Amount</th><th></th></tr></thead><tbody>
+          ${tx.map(t=>{
+            const editing=state._editRow===t.id;
+            if(editing){
+              return `<tr><td><input type="date" data-edit-field="date" value="${esc(t.date)}"></td>
+                <td><select data-edit-field="kind"><option value="contribution" ${t.kind==='contribution'?'selected':''}>contribution</option><option value="valuation" ${t.kind==='valuation'?'selected':''}>valuation</option></select></td>
+                <td><input type="number" data-edit-field="amount" value="${t.amount}" style="text-align:right;"></td>
+                <td class="row-actions"><button data-save-assettx="${t.id}">Save</button><button data-cancel-edit="1">Cancel</button></td></tr>`;
+            }
+            let amtCell;
+            if(t.kind==='valuation'){
+              const delta=deltas[t.id]||0;
+              amtCell=`<span style="color:${delta>=0?'var(--good)':'var(--bad)'};font-weight:600;">${delta>=0?'+':''}${fmtINR(delta)}</span><div style="font-size:10px;color:var(--ink-soft);">value ${fmtINR(t.amount)}</div>`;
+            } else {
+              amtCell=fmtINR(t.amount);
+            }
+            return `<tr class="${t.transferId?'transfer-row':''}"><td>${esc(t.date)}</td><td>${t.kind}${t.fromGoalId?' (from goal transfer)':''}</td><td class="amt">${amtCell}</td>
+              <td class="row-actions"><button data-edit-assettx="${t.id}">Edit</button><button data-del-assettx="${t.id}" data-assettx-transferid="${t.transferId||''}">Delete</button></td></tr>`;
+          }).join('')}
+        </tbody></table>`;
+    }).join('');
+
+    const liabTxTables = state.liabilities.map(l=>{
+      const tx=liabilityTxFor(l.id).slice().reverse();
+      if(!tx.length) return '';
+      return `<h4 style="margin-top:14px;">${esc(l.name)} balance history</h4>
+        <table><thead><tr><th>Date</th><th class="amt">Balance</th><th></th></tr></thead><tbody>
+          ${tx.map(t=>{
+            const editing=state._editRow===t.id;
+            if(editing){
+              return `<tr><td><input type="date" data-edit-field="date" value="${esc(t.date)}"></td>
+                <td><input type="number" data-edit-field="amount" value="${t.amount}" style="text-align:right;"></td>
+                <td class="row-actions"><button data-save-liabtx="${t.id}">Save</button><button data-cancel-edit="1">Cancel</button></td></tr>`;
+            }
+            return `<tr><td>${esc(t.date)}</td><td class="amt">${fmtINR(t.amount)}</td>
+              <td class="row-actions"><button data-edit-liabtx="${t.id}">Edit</button><button data-del-liabtx="${t.id}">Delete</button></td></tr>`;
+          }).join('')}
+        </tbody></table>`;
+    }).join('');
+
+    return `
+      <div class="summary-row">
+        <div class="stat"><div class="label">Total assets</div><div class="value">${fmtINR(totalAssets)}</div></div>
+        <div class="stat"><div class="label">Total liabilities</div><div class="value">${fmtINR(totalLiabilities)}</div></div>
+        <div class="stat"><div class="label">Net worth</div><div class="value ${netWorth>=0?'good':'bad'}">${fmtINR(netWorth)}</div></div>
+        <div class="stat"><div class="label">Goal funds included</div><div class="value">${fmtINR(state.goals.reduce((s,g)=>s+goalBalance(g.id),0))}</div></div>
+      </div>
+
+      <div class="card">
+        <h3>Assets</h3>
+        <table><thead><tr><th>Asset</th><th class="amt">Invested</th><th class="amt">Current value</th><th class="amt">Gain/loss</th><th></th></tr></thead><tbody>
+          ${assetRows}${goalRows}
+        </tbody></table>
+        ${(!state.assets.length && !state.goals.length)? '<div class="empty">No assets yet.</div>':''}
+        <div class="divider"></div>
+        <h4>Add an asset (investment, cash, or bank account)</h4>
+        <form id="asset-form" class="form-grid">
+          <div><label>Name</label><input type="text" name="name" placeholder="e.g. Zerodha equity, HDFC savings" required></div>
+          <div><label>Type</label><select name="type">${ASSET_TYPES.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')}</select></div>
+          <div><button class="btn" type="submit">Add asset</button></div>
+        </form>
+        <div class="divider"></div>
+        <h4>Log a contribution or valuation update</h4>
+        <form id="asset-tx-form" class="form-grid">
+          <div><label>Asset</label><select name="assetId">${assetOpts}</select></div>
+          <div><label>Date</label><input type="date" name="date" value="${todayDate()}" required></div>
+          <div><label>Type</label><select name="kind"><option value="contribution">Contribution (money added)</option><option value="valuation">Valuation update (current value)</option></select></div>
+          <div><label>Amount</label><input type="number" min="0" name="amount" required></div>
+          <div><button class="btn" type="submit">Log</button></div>
+        </form>
+        ${!state.assets.length? '<div class="empty">Add an asset above before logging activity.</div>':''}
+        ${assetTxTables}
+      </div>
+
+      <div class="card">
+        <h3>Liabilities</h3>
+        <table><thead><tr><th>Liability</th><th class="amt">Opening</th><th class="amt">Current</th><th></th></tr></thead><tbody>
+          ${liabRows}
+        </tbody></table>
+        ${!state.liabilities.length? '<div class="empty">No liabilities yet.</div>':''}
+        <div class="divider"></div>
+        <h4>Add a liability</h4>
+        <form id="liability-form" class="form-grid">
+          <div><label>Name</label><input type="text" name="name" placeholder="e.g. Car loan" required></div>
+          <div><label>Type</label><select name="type">${LIABILITY_TYPES.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')}</select></div>
+          <div><label>Opening balance</label><input type="number" min="0" name="openingBalance" required></div>
+          <div><label>As of date</label><input type="date" name="openingDate" value="${todayDate()}"></div>
+          <div><button class="btn" type="submit">Add liability</button></div>
+        </form>
+        <div class="divider"></div>
+        <h4>Update outstanding balance</h4>
+        <form id="liability-tx-form" class="form-grid">
+          <div><label>Liability</label><select name="liabilityId">${liabOpts}</select></div>
+          <div><label>Date</label><input type="date" name="date" value="${todayDate()}" required></div>
+          <div><label>Current balance</label><input type="number" min="0" name="amount" required></div>
+          <div><button class="btn" type="submit">Update</button></div>
+        </form>
+        ${!state.liabilities.length? '<div class="empty">Add a liability above before updating it.</div>':''}
+        ${liabTxTables}
+      </div>
+    `;
+  }
+
+  // ---------------- SETUP ----------------
+  function setupHTML(){
+    const versions=state.allocationVersions.slice().sort((a,b)=>b.effectiveMonth.localeCompare(a.effectiveMonth));
+    const editingMonth=state._editingAllocMonth || state.currentMonth;
+    const existing=state.allocationVersions.find(v=>v.effectiveMonth===editingMonth);
+    const items=planItems();
+    let pctRows='';
+    items.forEach(item=>{
+      let cells=state.people.map(p=>{
+        const val=existing && existing.pct[p] && existing.pct[p][item.key]!=null ? existing.pct[p][item.key] : '';
+        return `<input type="number" step="0.01" min="0" max="100" data-pct-person="${esc(p)}" data-pct-key="${esc(item.key)}" value="${val}" style="text-align:right;">`;
+      }).join('');
+      pctRows+=`<div class="pct-input-row"><div>${esc(item.label)}${item.kind==='goal'?' <span class="pill blue">goal</span>':''}</div>${cells}</div>`;
+    });
+    const peopleHeaders=state.people.map(p=>`<div style="font-size:11px;font-weight:600;color:var(--ink-soft);text-align:right;">${esc(p)}</div>`).join('');
+
+    return `
+      <div class="card"><h3>People</h3>
+        <div class="tag-list">${state.people.map(p=>`<span class="tag">${esc(p)} <button data-del-person="${esc(p)}">&times;</button></span>`).join('')}</div>
+        <div class="add-inline"><input type="text" id="new-person" placeholder="Add person"><button class="btn secondary small" id="add-person-btn">Add</button></div>
+      </div>
+
+      <div class="card"><h3>Categories</h3>
+        <div class="tag-list">${state.categories.map(c=>`<span class="tag">${esc(c)} <button data-del-category="${esc(c)}">&times;</button></span>`).join('')}</div>
+        <div class="add-inline"><input type="text" id="new-category" placeholder="Add category"><button class="btn secondary small" id="add-category-btn">Add</button></div>
+      </div>
+
+      <div class="card"><h3>Payment modes / accounts</h3>
+        <div class="tag-list">${state.accounts.map(a=>`<span class="tag">${esc(a.name)} <span style="color:var(--ink-soft);">(${esc(a.type)})</span> <button data-del-account="${esc(a.name)}">&times;</button></span>`).join('')}</div>
+        <div class="add-inline">
+          <input type="text" id="new-account" placeholder="Account name">
+          <select id="new-account-type"><option value="cash">Cash</option><option value="card">Card</option><option value="bank">Bank / net banking</option><option value="other">Other</option></select>
+          <button class="btn secondary small" id="add-account-btn">Add</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Allocation plan <span class="pill">versioned by month</span> <span class="pill blue">categories + goals combined</span></h3>
+        <div class="form-grid" style="margin-bottom:14px;grid-template-columns:200px 1fr;">
+          <div><label>Effective from month</label><input type="month" id="alloc-month" value="${editingMonth}"></div>
+        </div>
+        <div class="pct-input-row" style="font-weight:600;">
+          <div style="font-size:11px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.06em;">Category / Goal</div>${peopleHeaders}
+        </div>
+        ${pctRows}
+        <div id="pct-sum-area"></div>
+        <div style="margin-top:12px;display:flex;gap:10px;">
+          <button class="btn" id="save-allocation-btn">Save this version</button>
+          ${existing? `<button class="btn secondary" id="delete-allocation-btn">Delete this version</button>`:''}
+        </div>
+        <div class="divider"></div>
+        <div class="subsection-title">Existing versions</div>
+        ${versions.length? `<table><thead><tr><th>Effective from</th><th></th></tr></thead><tbody>
+          ${versions.map(v=>`<tr><td>${monthLabel(v.effectiveMonth)}</td><td class="row-actions"><button data-load-alloc="${v.effectiveMonth}">Edit</button></td></tr>`).join('')}
+        </tbody></table>` : '<div class="empty">No allocation versions saved yet.</div>'}
+      </div>
+
+      <div class="card">
+        <h3>Export data</h3>
+        <div style="font-size:13px;color:var(--ink-soft);margin-bottom:12px;">Download everything — income, expenses, transfers, goals, assets, liabilities — as an Excel workbook with one sheet per record type.</div>
+        <button class="btn secondary" id="export-btn">Export to Excel</button>
+      </div>
+    `;
+  }
+
+  // ---------------- EVENTS ----------------
+  function bindTabEvents(){
+    document.querySelectorAll('[data-shift]').forEach(b=>b.addEventListener('click',()=>{
+      state.currentMonth=shiftMonth(state.currentMonth, parseInt(b.dataset.shift,10));
+      saveState(); renderTabContent();
+    }));
+
+    if(state.activeTab==='entries'){
+      const incForm=document.getElementById('income-form');
+      if(incForm) incForm.addEventListener('submit', async(e)=>{
+        e.preventDefault();
+        const f=new FormData(incForm);
+        if(!canEdit(f.get('person'))){ alert("You can only add entries under your own name."); return; }
+        state.income.push({id:nextId(), date:f.get('date'), person:f.get('person'), source:f.get('source'), account:f.get('account'), amount:Number(f.get('amount'))});
+        await saveState(); renderTabContent();
+      });
+      const expForm=document.getElementById('expense-form');
+      if(expForm) expForm.addEventListener('submit', async(e)=>{
+        e.preventDefault();
+        const f=new FormData(expForm);
+        if(!canEdit(f.get('person'))){ alert("You can only add entries under your own name."); return; }
+        const irregular=!!f.get('irregular');
+        const reason=f.get('reason');
+        if(irregular && !reason){ alert('Please add a reason for this irregular expense.'); return; }
+        state.expenses.push({id:nextId(), date:f.get('date'), person:f.get('person'), category:f.get('category'), description:f.get('description'), account:f.get('account'), amount:Number(f.get('amount')), irregular, reason});
+        await saveState(); renderTabContent();
+      });
+      const trnForm=document.getElementById('transfer-form');
+      if(trnForm) trnForm.addEventListener('submit', async(e)=>{
+        e.preventDefault();
+        const f=new FormData(trnForm);
+        if(!canEdit(f.get('person'))){ alert("You can only add entries under your own name."); return; }
+        state.transfers.push({id:nextId(), date:f.get('date'), person:f.get('person'), fromAccount:f.get('fromAccount'), toAccount:f.get('toAccount'), amount:Number(f.get('amount')), note:f.get('note')});
+        await saveState(); renderTabContent();
+      });
+      document.querySelectorAll('[data-del-income]').forEach(b=>b.addEventListener('click', async()=>{
+        const row=state.income.find(r=>r.id===b.dataset.delIncome);
+        if(!canEdit(row.person)) return;
+        state.income=state.income.filter(r=>r.id!==b.dataset.delIncome);
+        await saveState(); renderTabContent();
+      }));
+      document.querySelectorAll('[data-del-expense]').forEach(b=>b.addEventListener('click', async()=>{
+        const row=state.expenses.find(r=>r.id===b.dataset.delExpense);
+        if(!canEdit(row.person)) return;
+        state.expenses=state.expenses.filter(r=>r.id!==b.dataset.delExpense);
+        await saveState(); renderTabContent();
+      }));
+      document.querySelectorAll('[data-del-transfer]').forEach(b=>b.addEventListener('click', async()=>{
+        const row=state.transfers.find(r=>r.id===b.dataset.delTransfer);
+        if(!canEdit(row.person)) return;
+        state.transfers=state.transfers.filter(r=>r.id!==b.dataset.delTransfer);
+        await saveState(); renderTabContent();
+      }));
+      document.querySelectorAll('[data-edit-income]').forEach(b=>b.addEventListener('click', ()=>{ state._editRow=b.dataset.editIncome; renderTabContent(); }));
+      document.querySelectorAll('[data-edit-expense]').forEach(b=>b.addEventListener('click', ()=>{ state._editRow=b.dataset.editExpense; renderTabContent(); }));
+      document.querySelectorAll('[data-cancel-edit]').forEach(b=>b.addEventListener('click', ()=>{ state._editRow=null; renderTabContent(); }));
+      document.querySelectorAll('[data-save-income]').forEach(b=>b.addEventListener('click', async()=>{
+        const id=b.dataset.saveIncome;
+        const row=state.income.find(r=>r.id===id);
+        document.querySelectorAll('[data-edit-field]').forEach(inp=>{ row[inp.dataset.editField]= inp.type==='number'?Number(inp.value):inp.value; });
+        state._editRow=null; await saveState(); renderTabContent();
+      }));
+      document.querySelectorAll('[data-save-expense]').forEach(b=>b.addEventListener('click', async()=>{
+        const id=b.dataset.saveExpense;
+        const row=state.expenses.find(r=>r.id===id);
+        document.querySelectorAll('[data-edit-field]').forEach(inp=>{ row[inp.dataset.editField]= inp.type==='number'?Number(inp.value):inp.value; });
+        state._editRow=null; await saveState(); renderTabContent();
+      }));
+      const searchBtn=document.getElementById('search-btn');
+      if(searchBtn) searchBtn.addEventListener('click', runSearch);
+    }
+
+    if(state.activeTab==='goals'){
+      const goalForm=document.getElementById('goal-form');
+      if(goalForm) goalForm.addEventListener('submit', async(e)=>{
+        e.preventDefault();
+        const f=new FormData(goalForm);
+        state.goals.push({id:nextId(), name:f.get('name'), targetAmount:Number(f.get('target')), account:f.get('account')});
+        await saveState(); renderTabContent();
+      });
+      const recurringForm=document.getElementById('recurring-form');
+      if(recurringForm) recurringForm.addEventListener('submit', async(e)=>{
+        e.preventDefault();
+        const f=new FormData(recurringForm);
+        state.recurringTransfers.push({id:nextId(), goalId:f.get('goalId'), assetId:f.get('assetId'), person:f.get('person'), amount:Number(f.get('amount')), label:f.get('label'), loggedMonths:[]});
+        await saveState(); renderTabContent();
+      });
+      document.querySelectorAll('[data-del-recurring]').forEach(b=>b.addEventListener('click', async()=>{
+        state.recurringTransfers=state.recurringTransfers.filter(r=>r.id!==b.dataset.delRecurring);
+        await saveState(); renderTabContent();
+      }));
+      document.querySelectorAll('[data-log-recurring]').forEach(b=>b.addEventListener('click', async()=>{
+        const r=state.recurringTransfers.find(x=>x.id===b.dataset.logRecurring);
+        if(!canEdit(r.person)){ alert('Only '+r.person+' can log this transfer.'); return; }
+        createLinkedTransfer(r.goalId, r.assetId, r.amount, state.currentMonth+'-01', r.person);
+        r.loggedMonths=r.loggedMonths||[]; r.loggedMonths.push(state.currentMonth);
+        await saveState(); renderTabContent();
+      }));
+      document.querySelectorAll('[data-skip-recurring]').forEach(b=>b.addEventListener('click', async()=>{
+        const r=state.recurringTransfers.find(x=>x.id===b.dataset.skipRecurring);
+        r.loggedMonths=r.loggedMonths||[]; r.loggedMonths.push(state.currentMonth);
+        await saveState(); renderTabContent();
+      }));
+      document.querySelectorAll('[data-del-goal]').forEach(b=>b.addEventListener('click', async()=>{
+        state.goals=state.goals.filter(g=>g.id!==b.dataset.delGoal);
+        state.goalTx=state.goalTx.filter(t=>t.goalId!==b.dataset.delGoal);
+        await saveState(); renderTabContent();
+      }));
+      document.querySelectorAll('[data-edit-goal]').forEach(b=>b.addEventListener('click', ()=>{ state._editGoalId=b.dataset.editGoal; renderTabContent(); }));
+      document.querySelectorAll('[data-cancel-edit-goal]').forEach(b=>b.addEventListener('click', ()=>{ state._editGoalId=null; renderTabContent(); }));
+      document.querySelectorAll('[data-save-goal]').forEach(b=>b.addEventListener('click', async()=>{
+        const g=state.goals.find(x=>x.id===b.dataset.saveGoal);
+        document.querySelectorAll('[data-edit-goal-field]').forEach(inp=>{ g[inp.dataset.editGoalField]= inp.dataset.editGoalField==='targetAmount'?Number(inp.value):inp.value; });
+        state._editGoalId=null; await saveState(); renderTabContent();
+      }));
+      document.querySelectorAll('[data-goaltx-type]').forEach(sel=>{
+        sel.addEventListener('change', ()=>{
+          const gid=sel.dataset.goaltxType;
+          const field=document.querySelector(`[data-goaltx-assetfield="${gid}"]`);
+          if(field) field.style.display = sel.value==='transfer' ? 'block' : 'none';
+        });
+      });
+      document.querySelectorAll('[data-goaltx-submit]').forEach(b=>b.addEventListener('click', async()=>{
+        const gid=b.dataset.goaltxSubmit;
+        const date=document.querySelector(`[data-goaltx-date="${gid}"]`).value;
+        const person=document.querySelector(`[data-goaltx-person="${gid}"]`).value;
+        const type=document.querySelector(`[data-goaltx-type="${gid}"]`).value;
+        const amount=Number(document.querySelector(`[data-goaltx-amount="${gid}"]`).value||0);
+        const reason=document.querySelector(`[data-goaltx-reason="${gid}"]`).value;
+        if(!canEdit(person)){ alert("You can only log activity under your own name."); return; }
+        if(!amount || amount<=0){ alert('Enter an amount.'); return; }
+        if(type==='withdrawal' && !reason){ alert('A reason is required for a withdrawal.'); return; }
+        if(type==='transfer'){
+          const assetSel=document.querySelector(`[data-goaltx-asset="${gid}"]`);
+          if(!assetSel || !assetSel.value){ alert('Choose a destination asset for the transfer.'); return; }
+          createLinkedTransfer(gid, assetSel.value, amount, date, person);
+        } else {
+          state.goalTx.push({id:nextId(), goalId:gid, date, person, type, amount, irregular:type==='withdrawal', reason});
+        }
+        await saveState(); renderTabContent();
+      }));
+      document.querySelectorAll('[data-edit-goaltx]').forEach(b=>b.addEventListener('click', ()=>{ state._editRow=b.dataset.editGoaltx; renderTabContent(); }));
+      document.querySelectorAll('[data-save-goaltx]').forEach(b=>b.addEventListener('click', async()=>{
+        const row=state.goalTx.find(t=>t.id===b.dataset.saveGoaltx);
+        document.querySelectorAll('[data-edit-field]').forEach(inp=>{ row[inp.dataset.editField]= inp.type==='number'?Number(inp.value):inp.value; });
+        state._editRow=null; await saveState(); renderTabContent();
+      }));
+      document.querySelectorAll('[data-del-goaltx]').forEach(b=>b.addEventListener('click', async()=>{
+        const row=state.goalTx.find(t=>t.id===b.dataset.delGoaltx);
+        if(!canEdit(row.person)) return;
+        if(b.dataset.goaltxTransferid){ deleteLinkedTransfer(b.dataset.goaltxTransferid); }
+        else { state.goalTx=state.goalTx.filter(t=>t.id!==b.dataset.delGoaltx); }
+        await saveState(); renderTabContent();
+      }));
+    }
+
+    if(state.activeTab==='analytics'){
+      const modeSel=document.getElementById('range-mode');
+      if(modeSel) modeSel.addEventListener('change', ()=>{ state.analyticsRange.mode=modeSel.value; saveState(); renderTabContent(); });
+      const rs=document.getElementById('range-start'), re=document.getElementById('range-end');
+      if(rs) rs.addEventListener('change', ()=>{ state.analyticsRange.start=rs.value; saveState(); renderTabContent(); });
+      if(re) re.addEventListener('change', ()=>{ state.analyticsRange.end=re.value; saveState(); renderTabContent(); });
+      const printBtn=document.getElementById('print-report-btn');
+      if(printBtn) printBtn.addEventListener('click', ()=>window.print());
+    }
+
+    if(state.activeTab==='networth'){
+      const assetForm=document.getElementById('asset-form');
+      if(assetForm) assetForm.addEventListener('submit', async(e)=>{
+        e.preventDefault();
+        const f=new FormData(assetForm);
+        state.assets.push({id:nextId(), name:f.get('name'), type:f.get('type')});
+        await saveState(); renderTabContent();
+      });
+      const assetTxForm=document.getElementById('asset-tx-form');
+      if(assetTxForm) assetTxForm.addEventListener('submit', async(e)=>{
+        e.preventDefault();
+        const f=new FormData(assetTxForm);
+        state.assetTx.push({id:nextId(), assetId:f.get('assetId'), date:f.get('date'), kind:f.get('kind'), amount:Number(f.get('amount'))});
+        await saveState(); renderTabContent();
+      });
+      document.querySelectorAll('[data-del-asset]').forEach(b=>b.addEventListener('click', async()=>{
+        state.assets=state.assets.filter(a=>a.id!==b.dataset.delAsset);
+        state.assetTx=state.assetTx.filter(t=>t.assetId!==b.dataset.delAsset);
+        await saveState(); renderTabContent();
+      }));
+      document.querySelectorAll('[data-edit-asset]').forEach(b=>b.addEventListener('click', ()=>{ state._editAssetId=b.dataset.editAsset; renderTabContent(); }));
+      document.querySelectorAll('[data-cancel-edit-asset]').forEach(b=>b.addEventListener('click', ()=>{ state._editAssetId=null; renderTabContent(); }));
+      document.querySelectorAll('[data-save-asset]').forEach(b=>b.addEventListener('click', async()=>{
+        const a=state.assets.find(x=>x.id===b.dataset.saveAsset);
+        document.querySelectorAll('[data-edit-asset-field]').forEach(inp=>{ a[inp.dataset.editAssetField]=inp.value; });
+        state._editAssetId=null; await saveState(); renderTabContent();
+      }));
+      document.querySelectorAll('[data-edit-assettx]').forEach(b=>b.addEventListener('click', ()=>{ state._editRow=b.dataset.editAssettx; renderTabContent(); }));
+      document.querySelectorAll('[data-save-assettx]').forEach(b=>b.addEventListener('click', async()=>{
+        const row=state.assetTx.find(t=>t.id===b.dataset.saveAssettx);
+        document.querySelectorAll('[data-edit-field]').forEach(inp=>{ row[inp.dataset.editField]= inp.type==='number'?Number(inp.value):inp.value; });
+        state._editRow=null; await saveState(); renderTabContent();
+      }));
+      document.querySelectorAll('[data-del-assettx]').forEach(b=>b.addEventListener('click', async()=>{
+        if(b.dataset.assettxTransferid){ deleteLinkedTransfer(b.dataset.assettxTransferid); }
+        else { state.assetTx=state.assetTx.filter(t=>t.id!==b.dataset.delAssettx); }
+        await saveState(); renderTabContent();
+      }));
+      const liabForm=document.getElementById('liability-form');
+      if(liabForm) liabForm.addEventListener('submit', async(e)=>{
+        e.preventDefault();
+        const f=new FormData(liabForm);
+        state.liabilities.push({id:nextId(), name:f.get('name'), type:f.get('type'), openingBalance:Number(f.get('openingBalance')), openingDate:f.get('openingDate')});
+        await saveState(); renderTabContent();
+      });
+      const liabTxForm=document.getElementById('liability-tx-form');
+      if(liabTxForm) liabTxForm.addEventListener('submit', async(e)=>{
+        e.preventDefault();
+        const f=new FormData(liabTxForm);
+        state.liabilityTx.push({id:nextId(), liabilityId:f.get('liabilityId'), date:f.get('date'), amount:Number(f.get('amount'))});
+        await saveState(); renderTabContent();
+      });
+      document.querySelectorAll('[data-del-liability]').forEach(b=>b.addEventListener('click', async()=>{
+        state.liabilities=state.liabilities.filter(l=>l.id!==b.dataset.delLiability);
+        state.liabilityTx=state.liabilityTx.filter(t=>t.liabilityId!==b.dataset.delLiability);
+        await saveState(); renderTabContent();
+      }));
+      document.querySelectorAll('[data-edit-liability]').forEach(b=>b.addEventListener('click', ()=>{ state._editLiabilityId=b.dataset.editLiability; renderTabContent(); }));
+      document.querySelectorAll('[data-cancel-edit-liab]').forEach(b=>b.addEventListener('click', ()=>{ state._editLiabilityId=null; renderTabContent(); }));
+      document.querySelectorAll('[data-save-liability]').forEach(b=>b.addEventListener('click', async()=>{
+        const l=state.liabilities.find(x=>x.id===b.dataset.saveLiability);
+        document.querySelectorAll('[data-edit-liab-field]').forEach(inp=>{ l[inp.dataset.editLiabField]= inp.dataset.editLiabField==='openingBalance'?Number(inp.value):inp.value; });
+        state._editLiabilityId=null; await saveState(); renderTabContent();
+      }));
+      document.querySelectorAll('[data-edit-liabtx]').forEach(b=>b.addEventListener('click', ()=>{ state._editRow=b.dataset.editLiabtx; renderTabContent(); }));
+      document.querySelectorAll('[data-save-liabtx]').forEach(b=>b.addEventListener('click', async()=>{
+        const row=state.liabilityTx.find(t=>t.id===b.dataset.saveLiabtx);
+        document.querySelectorAll('[data-edit-field]').forEach(inp=>{ row[inp.dataset.editField]= inp.type==='number'?Number(inp.value):inp.value; });
+        state._editRow=null; await saveState(); renderTabContent();
+      }));
+      document.querySelectorAll('[data-del-liabtx]').forEach(b=>b.addEventListener('click', async()=>{
+        state.liabilityTx=state.liabilityTx.filter(t=>t.id!==b.dataset.delLiabtx);
+        await saveState(); renderTabContent();
+      }));
+    }
+
+    if(state.activeTab==='setup'){
+      const addPersonBtn=document.getElementById('add-person-btn');
+      if(addPersonBtn) addPersonBtn.addEventListener('click', async()=>{
+        const inp=document.getElementById('new-person'); const v=inp.value.trim();
+        if(v && !state.people.includes(v)){ state.people.push(v); await saveState(); renderTabContent(); }
+      });
+      document.querySelectorAll('[data-del-person]').forEach(b=>b.addEventListener('click', async()=>{
+        state.people=state.people.filter(p=>p!==b.dataset.delPerson); await saveState(); renderTabContent();
+      }));
+      const addCatBtn=document.getElementById('add-category-btn');
+      if(addCatBtn) addCatBtn.addEventListener('click', async()=>{
+        const inp=document.getElementById('new-category'); const v=inp.value.trim();
+        if(v && !state.categories.includes(v)){ state.categories.push(v); await saveState(); renderTabContent(); }
+      });
+      document.querySelectorAll('[data-del-category]').forEach(b=>b.addEventListener('click', async()=>{
+        state.categories=state.categories.filter(c=>c!==b.dataset.delCategory); await saveState(); renderTabContent();
+      }));
+      const addAcctBtn=document.getElementById('add-account-btn');
+      if(addAcctBtn) addAcctBtn.addEventListener('click', async()=>{
+        const inp=document.getElementById('new-account'); const v=inp.value.trim();
+        const type=document.getElementById('new-account-type').value;
+        if(v && !state.accounts.find(a=>a.name===v)){ state.accounts.push({name:v,type}); await saveState(); renderTabContent(); }
+      });
+      document.querySelectorAll('[data-del-account]').forEach(b=>b.addEventListener('click', async()=>{
+        state.accounts=state.accounts.filter(a=>a.name!==b.dataset.delAccount); await saveState(); renderTabContent();
+      }));
+
+      const allocMonthInp=document.getElementById('alloc-month');
+      if(allocMonthInp) allocMonthInp.addEventListener('change', ()=>{ state._editingAllocMonth=allocMonthInp.value; renderTabContent(); });
+      function updatePctSum(){
+        const area=document.getElementById('pct-sum-area'); if(!area) return;
+        let html='';
+        state.people.forEach(p=>{
+          let sum=0;
+          document.querySelectorAll(`[data-pct-person="${CSS.escape(p)}"]`).forEach(inp=>{ sum+=Number(inp.value||0); });
+          const ok=Math.abs(sum-100)<0.5;
+          html+=`<div class="pct-sum ${ok?'good':'bad'}">${esc(p)} total: ${sum.toFixed(2)}%${ok?' ✓':' (should be 100%)'}</div>`;
+        });
+        area.innerHTML=html;
+      }
+      document.querySelectorAll('[data-pct-person]').forEach(inp=>inp.addEventListener('input', updatePctSum));
+      updatePctSum();
+
+      const saveBtn=document.getElementById('save-allocation-btn');
+      if(saveBtn) saveBtn.addEventListener('click', async()=>{
+        const month=document.getElementById('alloc-month').value;
+        const pct={}; state.people.forEach(p=>{ pct[p]={}; });
+        document.querySelectorAll('[data-pct-person]').forEach(inp=>{ pct[inp.dataset.pctPerson][inp.dataset.pctKey]=Number(inp.value||0); });
+        const idx=state.allocationVersions.findIndex(v=>v.effectiveMonth===month);
+        const entry={effectiveMonth:month, pct};
+        if(idx>=0) state.allocationVersions[idx]=entry; else state.allocationVersions.push(entry);
+        state._editingAllocMonth=month; await saveState(); renderTabContent();
+      });
+      const delBtn=document.getElementById('delete-allocation-btn');
+      if(delBtn) delBtn.addEventListener('click', async()=>{
+        const month=document.getElementById('alloc-month').value;
+        state.allocationVersions=state.allocationVersions.filter(v=>v.effectiveMonth!==month);
+        await saveState(); renderTabContent();
+      });
+      document.querySelectorAll('[data-load-alloc]').forEach(b=>b.addEventListener('click', ()=>{ state._editingAllocMonth=b.dataset.loadAlloc; renderTabContent(); }));
+
+      const exportBtn=document.getElementById('export-btn');
+      if(exportBtn) exportBtn.addEventListener('click', exportToExcel);
+    }
+  }
+
+  (async function init(){
+    await initGoogle();
+    const app=document.getElementById('app');
+    app.innerHTML=loginHTML();
+    bindLoginEvents();
+  })();
+})();
+</script>
+</body>
+</html>
