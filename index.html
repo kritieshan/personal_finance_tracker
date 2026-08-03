@@ -500,8 +500,19 @@
   }
   // ---- real account balance tracking (accounts as ledger accounts, not just labels) ----
   function acctIsLiability(a){ return a.isLiability!=null ? a.isLiability : a.type==='card'; }
-  function acctOpeningBalance(a){ return Number(a.openingBalance||0); }
-  function acctOpeningDate(a){ return a.openingDate || '0000-01-01'; }
+  function acctAnchors(a){
+    if(a.openingHistory && a.openingHistory.length) return a.openingHistory.slice().sort((x,y)=>x.date.localeCompare(y.date));
+    if(a.openingDate) return [{date:a.openingDate, balance:Number(a.openingBalance||0)}];
+    return [{date:'0000-01-01', balance:0}];
+  }
+  function acctAnchorAsOf(a,dateStr){
+    const anchors=acctAnchors(a);
+    let applicable=anchors[0];
+    anchors.forEach(anc=>{ if(anc.date<=dateStr) applicable=anc; });
+    return applicable;
+  }
+  function acctOpeningBalance(a){ return acctAnchorAsOf(a,'9999-99-99').balance; }
+  function acctOpeningDate(a){ const d=acctAnchorAsOf(a,'9999-99-99').date; return d==='0000-01-01' ? null : d; }
   function acctOwner(a){ return a.owner || 'Joint'; }
   function OWNER_OPTIONS(){ return state.people.concat(['Joint']); }
   function ownerMatches(owner, filter){
@@ -512,8 +523,9 @@
   }
   function accountBalance(acct){ return accountBalanceAsOf(acct, '9999-99-99'); }
   function accountBalanceAsOf(acct,dateStr){
-    const openDate=acctOpeningDate(acct);
-    let bal=acctOpeningBalance(acct);
+    const anchor=acctAnchorAsOf(acct,dateStr);
+    const openDate=anchor.date;
+    let bal=anchor.balance;
     const incomeIn=state.income.filter(e=>e.account===acct.name && e.date>=openDate && e.date<=dateStr).reduce((s,e)=>s+Number(e.amount),0);
     const expenseOut=state.expenses.filter(e=>e.account===acct.name && e.date>=openDate && e.date<=dateStr).reduce((s,e)=>s+Number(e.amount),0);
     const transfersOut=state.transfers.filter(t=>t.fromAccount===acct.name && t.date>=openDate && t.date<=dateStr).reduce((s,t)=>s+Number(t.amount),0);
@@ -651,7 +663,7 @@
 
     addSheet('Accounts', state.accounts.map(a=>({
       Account:a.name, Type:a.type, Owner:a.owner||'Joint', 'Asset or Liability':acctIsLiability(a)?'Liability':'Asset',
-      'Opening Balance (₹)':acctOpeningBalance(a), 'Opening Date':a.openingDate||'—', 'Current Balance (₹)':accountBalance(a)
+      'Opening Balance (₹)':acctOpeningBalance(a), 'Opening Date':acctOpeningDate(a)||'—', 'Current Balance (₹)':accountBalance(a)
     })), [18,10,10,16,18,14,18]);
 
     addSheet('Goals', state.goals.map(g=>({
@@ -1321,28 +1333,32 @@
     const filter = state.netWorthFilter || 'all';
     const filterOptions = ['all'].concat(state.people).concat(['Joint']);
     const filterLabel = f => f==='all' ? 'All (household)' : f;
+    const asOfDate = state.netWorthAsOfDate || null;
+    const isHistorical = !!asOfDate;
+    const queryDate = asOfDate || '9999-99-99';
 
     const fAccounts = state.accounts.filter(a=>ownerMatches(a.owner, filter));
     const fAssets = state.assets.filter(a=>ownerMatches(a.owner, filter));
     const fLiabilities = state.liabilities.filter(l=>ownerMatches(l.owner, filter));
     const includeGoals = (filter==='all' || filter==='Joint');
 
-    const totalAssets = fAssets.reduce((s,a)=>s+assetCurrentValue(a.id),0)
-      + (includeGoals? state.goals.reduce((s,g)=>s+goalBalance(g.id),0) : 0)
-      + fAccounts.filter(a=>!acctIsLiability(a)).reduce((s,a)=>s+accountBalance(a),0);
-    const totalLiabilities = fLiabilities.reduce((s,l)=>s+liabilityCurrentBalance(l),0)
-      + fAccounts.filter(a=>acctIsLiability(a)).reduce((s,a)=>s+accountBalance(a),0);
+    const totalAssets = fAssets.reduce((s,a)=>s+assetCurrentValueAsOf(a.id,queryDate),0)
+      + (includeGoals? state.goals.reduce((s,g)=>s+goalBalanceAsOf(g.id,queryDate),0) : 0)
+      + fAccounts.filter(a=>!acctIsLiability(a)).reduce((s,a)=>s+accountBalanceAsOf(a,queryDate),0);
+    const totalLiabilities = fLiabilities.reduce((s,l)=>s+liabilityBalanceAsOf(l,queryDate),0)
+      + fAccounts.filter(a=>acctIsLiability(a)).reduce((s,a)=>s+accountBalanceAsOf(a,queryDate),0);
     const netWorth = totalAssets - totalLiabilities;
 
     const acctRows = fAccounts.map(a=>{
-      const editing=state._editAcctBalId===a.name;
-      const bal=accountBalance(a);
+      const editing=!isHistorical && state._editAcctBalId===a.name;
+      const bal=accountBalanceAsOf(a,queryDate);
       const isLiab=acctIsLiability(a);
+      const dispAnchor=acctAnchorAsOf(a,queryDate);
       if(editing){
         return `<tr><td colspan="4">
           <div class="form-grid">
             <div><label>Opening balance</label><input type="number" data-edit-acctbal-field="openingBalance" value="${acctOpeningBalance(a)}"></div>
-            <div><label>As of date</label><input type="date" data-edit-acctbal-field="openingDate" value="${a.openingDate||todayDate()}"></div>
+            <div><label>As of date</label><input type="date" data-edit-acctbal-field="openingDate" value="${acctOpeningDate(a)||todayDate()}"></div>
             <div><label>Owner</label><select data-edit-acctbal-field="owner">${OWNER_OPTIONS().map(p=>`<option ${acctOwner(a)===p?'selected':''}>${esc(p)}</option>`).join('')}</select></div>
             <div class="checkbox-row" style="align-self:center;"><input type="checkbox" id="acctbal-liab" data-edit-acctbal-field="isLiability" ${isLiab?'checked':''}><label style="margin:0;" for="acctbal-liab">Liability (e.g. credit card)</label></div>
             <div><button class="btn small" data-save-acctbal="${esc(a.name)}">Save</button> <button class="btn secondary small" data-cancel-edit-acctbal="1">Cancel</button></div>
@@ -1350,15 +1366,15 @@
         </td></tr>`;
       }
       return `<tr>
-        <td>${esc(a.name)}<div style="font-size:11px;color:var(--ink-soft);">${esc(a.type)} · ${isLiab?'liability':'asset'} · <b>${esc(acctOwner(a))}</b>${a.openingDate?' · opening '+fmtINR(acctOpeningBalance(a))+' as of '+esc(a.openingDate):' · no opening balance set'}</div></td>
+        <td>${esc(a.name)}<div style="font-size:11px;color:var(--ink-soft);">${esc(a.type)} · ${isLiab?'liability':'asset'} · <b>${esc(acctOwner(a))}</b>${dispAnchor.date!=='0000-01-01'?' · opening '+fmtINR(dispAnchor.balance)+' as of '+esc(dispAnchor.date):' · no opening balance set'}${acctAnchors(a).length>1?' · <span title="'+acctAnchors(a).map(h=>h.date+': '+fmtINR(h.balance)).join(', ')+'">rolled forward '+(acctAnchors(a).length-1)+'x</span>':''}</div></td>
         <td class="amt" style="color:${isLiab?(bal>0?'var(--bad)':'var(--good)'):'var(--ink)'};">${fmtINR(bal)}</td>
-        <td class="row-actions"><button data-edit-acctbal="${esc(a.name)}">Edit</button></td>
+        <td class="row-actions">${isHistorical?'':`<button data-edit-acctbal="${esc(a.name)}">Edit</button>`}</td>
       </tr>`;
     }).join('');
 
     const assetRows = fAssets.map(a=>{
-      const invested=assetInvested(a.id), current=assetCurrentValue(a.id), gain=current-invested;
-      const editing=state._editAssetId===a.id;
+      const invested=assetInvestedAsOf(a.id,queryDate), current=assetCurrentValueAsOf(a.id,queryDate), gain=current-invested;
+      const editing=!isHistorical && state._editAssetId===a.id;
       if(editing){
         return `<tr><td colspan="5">
           <div class="form-grid">
@@ -1374,18 +1390,18 @@
         <td class="amt">${fmtINR(invested)}</td>
         <td class="amt">${fmtINR(current)}</td>
         <td class="amt" style="color:${gain>=0?'var(--good)':'var(--bad)'};">${gain>=0?'+':''}${fmtINR(gain)}</td>
-        <td class="row-actions"><button data-edit-asset="${a.id}">Edit</button><button data-del-asset="${a.id}">Delete</button></td>
+        <td class="row-actions">${isHistorical?'':`<button data-edit-asset="${a.id}">Edit</button><button data-del-asset="${a.id}">Delete</button>`}</td>
       </tr>`;
     }).join('');
     const goalRows = includeGoals ? state.goals.map(g=>`<tr>
       <td>${esc(g.name)}<div style="font-size:11px;color:var(--ink-soft);">Goal fund · Joint</div></td>
-      <td class="amt">${fmtINR(goalBalance(g.id))}</td>
-      <td class="amt">${fmtINR(goalBalance(g.id))}</td>
+      <td class="amt">${fmtINR(goalBalanceAsOf(g.id,queryDate))}</td>
+      <td class="amt">${fmtINR(goalBalanceAsOf(g.id,queryDate))}</td>
       <td class="amt">—</td>
       <td></td>
     </tr>`).join('') : '';
     const liabRows = fLiabilities.map(l=>{
-      const editing=state._editLiabilityId===l.id;
+      const editing=!isHistorical && state._editLiabilityId===l.id;
       if(editing){
         return `<tr><td colspan="4">
           <div class="form-grid">
@@ -1400,8 +1416,8 @@
       return `<tr>
         <td>${esc(l.name)}<div style="font-size:11px;color:var(--ink-soft);">${esc(l.type)} · <b>${esc(l.owner||'Joint')}</b></div></td>
         <td class="amt">${fmtINR(l.openingBalance)}</td>
-        <td class="amt">${fmtINR(liabilityCurrentBalance(l))}</td>
-        <td class="row-actions"><button data-edit-liability="${l.id}">Edit</button><button data-del-liability="${l.id}">Delete</button></td>
+        <td class="amt">${fmtINR(liabilityBalanceAsOf(l,queryDate))}</td>
+        <td class="row-actions">${isHistorical?'':`<button data-edit-liability="${l.id}">Edit</button><button data-del-liability="${l.id}">Delete</button>`}</td>
       </tr>`;
     }).join('');
 
@@ -1467,13 +1483,21 @@
             ${filterOptions.map(f=>`<option value="${esc(f)}" ${filter===f?'selected':''}>${esc(filterLabel(f))}</option>`).join('')}
           </select>
         </div>
+        <div><label>As of</label>
+          <select id="networth-asof-filter">
+            <option value="today" ${!isHistorical?'selected':''}>Today (live)</option>
+            <option value="custom" ${isHistorical?'selected':''}>Specific date…</option>
+          </select>
+        </div>
+        <div id="networth-asof-date-wrap" style="${isHistorical?'':'display:none;'}"><label>Date</label><input type="date" id="networth-asof-date" value="${asOfDate||todayDate()}"></div>
         ${filter!=='all'? '<div style="align-self:center;font-size:12px;color:var(--ink-soft);padding-bottom:8px;">Showing accounts/assets/liabilities owned by '+esc(filter)+' or Joint. Goal funds '+(includeGoals?'included (Joint).':'excluded from this person-only view.')+'</div>':''}
       </div>
+      ${isHistorical? `<div class="banner blue">Viewing a historical snapshot as of <b>${esc(asOfDate)}</b> — read-only. Editing, adding, and rollover are disabled here; switch "As of" back to Today to make changes.</div>` : ''}
       <div class="summary-row">
         <div class="stat"><div class="label">Total assets</div><div class="value">${fmtINR(totalAssets)}</div></div>
         <div class="stat"><div class="label">Total liabilities</div><div class="value">${fmtINR(totalLiabilities)}</div></div>
         <div class="stat"><div class="label">Net worth</div><div class="value ${netWorth>=0?'good':'bad'}">${fmtINR(netWorth)}</div></div>
-        <div class="stat"><div class="label">Goal funds included</div><div class="value">${includeGoals? fmtINR(state.goals.reduce((s,g)=>s+goalBalance(g.id),0)) : '—'}</div></div>
+        <div class="stat"><div class="label">Goal funds included</div><div class="value">${includeGoals? fmtINR(state.goals.reduce((s,g)=>s+goalBalanceAsOf(g.id,queryDate),0)) : '—'}</div></div>
       </div>
 
       <div class="card">
@@ -1483,6 +1507,14 @@
           ${acctRows}
         </tbody></table>
         ${!fAccounts.length? '<div class="empty">No accounts in this view — add one in Setup → Payment modes / accounts.</div>':''}
+        ${isHistorical? '' : `
+        <div class="divider"></div>
+        <h4>Start a new financial year</h4>
+        <div style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Carries each account's current balance forward as a fresh opening point at the date you pick — nothing before it is deleted, and older years stay fully viewable in the Ledger and by switching "As of" above to a past date. This keeps the "opening balance" label from drifting further into the past every year.</div>
+        <div class="form-grid" style="grid-template-columns:200px 1fr;">
+          <div><label>New opening date</label><input type="date" id="rollover-date" value="${(parseInt(fyBounds(currentRealMonth()).start.split('-')[0],10)+1)+'-04-01'}"></div>
+          <div><button class="btn secondary" id="rollover-btn">Roll forward all accounts to this date</button></div>
+        </div>`}
       </div>
 
       <div class="card">
@@ -1491,6 +1523,7 @@
           ${assetRows}${goalRows}
         </tbody></table>
         ${(!fAssets.length && !goalRows)? '<div class="empty">No assets in this view.</div>':''}
+        ${isHistorical? '' : `
         <div class="divider"></div>
         <h4>Add an asset (investment, cash, or bank account)</h4>
         <form id="asset-form" class="form-grid">
@@ -1520,7 +1553,7 @@
         </form>
         ${!state.assets.length? '<div class="empty">Add an asset above before logging activity.</div>':''}
         ${!state.accounts.length? '<div style="font-size:11px;color:var(--ink-soft);margin-top:4px;">Add an account in Setup to enable contribution/withdrawal source tracking.</div>':''}
-        ${assetTxTables}
+        ${assetTxTables}`}
       </div>
 
       <div class="card">
@@ -1529,6 +1562,7 @@
           ${liabRows}
         </tbody></table>
         ${!fLiabilities.length? '<div class="empty">No liabilities in this view.</div>':''}
+        ${isHistorical? '' : `
         <div class="divider"></div>
         <h4>Add a liability</h4>
         <form id="liability-form" class="form-grid">
@@ -1548,13 +1582,11 @@
           <div><button class="btn" type="submit">Update</button></div>
         </form>
         ${!state.liabilities.length? '<div class="empty">Add a liability above before updating it.</div>':''}
-        ${liabTxTables}
+        ${liabTxTables}`}
       </div>
     `;
   }
 
-
-  // ---------------- LEDGER ----------------
   function accountLedgerEntries(acct){
     const isLiab=acctIsLiability(acct);
     const goalName=id=>{ const g=state.goals.find(x=>x.id===id); return g?g.name:'—'; };
@@ -1598,14 +1630,17 @@
       if(!acct){ body='<div class="empty">Account not found.</div>'; }
       else {
         let entries = accountLedgerEntries(acct);
-        let startBalance = acctOpeningBalance(acct);
+        const firstAnchor = acctAnchors(acct)[0];
+        let startBalance = firstAnchor.balance;
+        let startDate = firstAnchor.date;
         if(fromDate){
           const dayBefore = shiftDateByDays(fromDate, -1);
           startBalance = accountBalanceAsOf(acct, dayBefore);
+          startDate = fromDate;
         }
         entries = entries.filter(e=> (!fromDate||e.date>=fromDate) && (!toDate||e.date<=toDate) );
         let bal=startBalance;
-        const rows=[{date: fromDate||acct.openingDate||'—', type:'Balance forward', desc:'—', person:'—', delta:null, balance:bal}];
+        const rows=[{date: startDate==='0000-01-01'?'—':startDate, type:'Balance forward', desc:'—', person:'—', delta:null, balance:bal}];
         entries.forEach(e=>{ bal+=e.delta; rows.push(Object.assign({balance:bal}, e)); });
         body = `<table><thead><tr><th>Date</th><th>Type</th><th>Description</th><th>Person</th><th class="amt">Amount</th><th class="amt">Balance</th></tr></thead><tbody>
           ${rows.map(r=>`<tr>${r.type==='Balance forward'?'<td colspan="4" style="font-style:italic;color:var(--ink-soft);">Balance forward</td>':`<td>${esc(r.date)}</td><td>${esc(r.type)}</td><td>${esc(r.desc)}</td><td>${esc(r.person)}</td>`}<td class="amt" style="color:${r.delta==null?'inherit':(r.delta>=0?'var(--good)':'var(--bad)')};">${r.delta==null?'—':(r.delta>=0?'+':'')+fmtINR(r.delta)}</td><td class="amt"><b>${fmtINR(r.balance)}</b></td></tr>`).join('')}
@@ -1889,6 +1924,30 @@
     if(state.activeTab==='networth'){
       const filterSel=document.getElementById('networth-owner-filter');
       if(filterSel) filterSel.addEventListener('change', ()=>{ state.netWorthFilter=filterSel.value; saveState(); renderTabContent(); });
+      const asOfSel=document.getElementById('networth-asof-filter');
+      const asOfDateWrap=document.getElementById('networth-asof-date-wrap');
+      const asOfDateInp=document.getElementById('networth-asof-date');
+      if(asOfSel) asOfSel.addEventListener('change', ()=>{
+        if(asOfSel.value==='today'){ state.netWorthAsOfDate=null; saveState(); renderTabContent(); }
+        else { if(asOfDateWrap) asOfDateWrap.style.display='block'; if(asOfDateInp && !state.netWorthAsOfDate){ state.netWorthAsOfDate=asOfDateInp.value; saveState(); renderTabContent(); } }
+      });
+      if(asOfDateInp) asOfDateInp.addEventListener('change', ()=>{ state.netWorthAsOfDate=asOfDateInp.value; saveState(); renderTabContent(); });
+      const rolloverBtn=document.getElementById('rollover-btn');
+      if(rolloverBtn) rolloverBtn.addEventListener('click', async()=>{
+        const dateInp=document.getElementById('rollover-date');
+        const newDate=dateInp.value;
+        if(!newDate){ alert('Choose a date.'); return; }
+        const dayBefore=shiftDateByDays(newDate,-1);
+        const ok=confirm('This will set '+state.accounts.length+' account(s) to a fresh opening balance as of '+newDate+', carrying forward each account current computed balance. Nothing before this date is deleted — it stays visible in the Ledger and in historical "view as of" lookups. Continue?');
+        if(!ok) return;
+        state.accounts.forEach(acct=>{
+          const carriedBalance=accountBalanceAsOf(acct, dayBefore);
+          acct.openingHistory=acctAnchors(acct);
+          acct.openingHistory.push({date:newDate, balance:carriedBalance});
+          delete acct.openingBalance; delete acct.openingDate;
+        });
+        await saveState(); renderTabContent();
+      });
       const assetForm=document.getElementById('asset-form');
       if(assetForm) assetForm.addEventListener('submit', async(e)=>{
         e.preventDefault();
@@ -1945,13 +2004,17 @@
       document.querySelectorAll('[data-cancel-edit-acctbal]').forEach(b=>b.addEventListener('click', ()=>{ state._editAcctBalId=null; renderTabContent(); }));
       document.querySelectorAll('[data-save-acctbal]').forEach(b=>b.addEventListener('click', async()=>{
         const acct=state.accounts.find(a=>a.name===b.dataset.saveAcctbal);
+        let newBalance=acctOpeningBalance(acct), newDate=acctOpeningDate(acct)||todayDate();
         document.querySelectorAll('[data-edit-acctbal-field]').forEach(inp=>{
           const field=inp.dataset.editAcctbalField;
           if(field==='isLiability') acct.isLiability=inp.checked;
-          else if(field==='openingBalance') acct.openingBalance=Number(inp.value||0);
           else if(field==='owner') acct.owner=inp.value;
-          else acct.openingDate=inp.value;
+          else if(field==='openingBalance') newBalance=Number(inp.value||0);
+          else if(field==='openingDate') newDate=inp.value;
         });
+        acct.openingHistory=acctAnchors(acct);
+        acct.openingHistory[acct.openingHistory.length-1]={date:newDate, balance:newBalance};
+        delete acct.openingBalance; delete acct.openingDate; // superseded by openingHistory
         state._editAcctBalId=null; await saveState(); renderTabContent();
       }));
       document.querySelectorAll('[data-cancel-edit-asset]').forEach(b=>b.addEventListener('click', ()=>{ state._editAssetId=null; renderTabContent(); }));
