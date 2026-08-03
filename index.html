@@ -433,6 +433,12 @@
     state.goalTx=state.goalTx.filter(t=>t.transferId!==transferId);
     state.assetTx=state.assetTx.filter(t=>t.transferId!==transferId);
   }
+  function createLinkedAssetTransfer(fromAssetId, toAssetId, amount, date){
+    const tid=nextId();
+    state.assetTx.push({id:nextId(), assetId:fromAssetId, date, kind:'withdrawal', amount, transferId:tid, toAssetId:toAssetId});
+    state.assetTx.push({id:nextId(), assetId:toAssetId, date, kind:'contribution', amount, transferId:tid, fromAssetId:fromAssetId});
+    return tid;
+  }
   function pendingRecurringTransfers(){
     const month=state.currentMonth;
     return state.recurringTransfers.filter(r=>!(r.loggedMonths||[]).includes(month));
@@ -444,12 +450,21 @@
     let baseline=0, deltas={};
     assetTxFor(assetId).forEach(t=>{
       if(t.kind==='contribution'){ baseline+=Number(t.amount); }
+      else if(t.kind==='withdrawal'){ baseline-=Number(t.amount); }
       else if(t.kind==='valuation'){ deltas[t.id]=Number(t.amount)-baseline; baseline=Number(t.amount); }
     });
     return deltas;
   }
-  function assetInvested(assetId){ return assetTxFor(assetId).filter(t=>t.kind==='contribution').reduce((s,t)=>s+Number(t.amount),0); }
-  function assetInvestedAsOf(assetId,dateStr){ return assetTxFor(assetId).filter(t=>t.kind==='contribution'&&t.date<=dateStr).reduce((s,t)=>s+Number(t.amount),0); }
+  function assetInvested(assetId){
+    let sum=0;
+    assetTxFor(assetId).forEach(t=>{ if(t.kind==='contribution') sum+=Number(t.amount); else if(t.kind==='withdrawal') sum-=Number(t.amount); });
+    return sum;
+  }
+  function assetInvestedAsOf(assetId,dateStr){
+    let sum=0;
+    assetTxFor(assetId).filter(t=>t.date<=dateStr).forEach(t=>{ if(t.kind==='contribution') sum+=Number(t.amount); else if(t.kind==='withdrawal') sum-=Number(t.amount); });
+    return sum;
+  }
   function assetCurrentValue(assetId){
     const valuations=assetTxFor(assetId).filter(t=>t.kind==='valuation');
     if(valuations.length) return Number(valuations[valuations.length-1].amount);
@@ -482,20 +497,15 @@
   function acctIsLiability(a){ return a.isLiability!=null ? a.isLiability : a.type==='card'; }
   function acctOpeningBalance(a){ return Number(a.openingBalance||0); }
   function acctOpeningDate(a){ return a.openingDate || '0000-01-01'; }
-  function accountBalance(acct){
-    const openDate=acctOpeningDate(acct);
-    let bal=acctOpeningBalance(acct);
-    const incomeIn=state.income.filter(e=>e.account===acct.name && e.date>=openDate).reduce((s,e)=>s+Number(e.amount),0);
-    const expenseOut=state.expenses.filter(e=>e.account===acct.name && e.date>=openDate).reduce((s,e)=>s+Number(e.amount),0);
-    const transfersOut=state.transfers.filter(t=>t.fromAccount===acct.name && t.date>=openDate).reduce((s,t)=>s+Number(t.amount),0);
-    const transfersIn=state.transfers.filter(t=>t.toAccount===acct.name && t.date>=openDate).reduce((s,t)=>s+Number(t.amount),0);
-    if(acctIsLiability(acct)){
-      bal += expenseOut - transfersIn + transfersOut - incomeIn;
-    } else {
-      bal += incomeIn - expenseOut - transfersOut + transfersIn;
-    }
-    return bal;
+  function acctOwner(a){ return a.owner || 'Joint'; }
+  function OWNER_OPTIONS(){ return state.people.concat(['Joint']); }
+  function ownerMatches(owner, filter){
+    const o=owner||'Joint';
+    if(filter==='all') return true;
+    if(filter==='Joint') return o==='Joint';
+    return o===filter || o==='Joint';
   }
+  function accountBalance(acct){ return accountBalanceAsOf(acct, '9999-99-99'); }
   function accountBalanceAsOf(acct,dateStr){
     const openDate=acctOpeningDate(acct);
     let bal=acctOpeningBalance(acct);
@@ -503,10 +513,12 @@
     const expenseOut=state.expenses.filter(e=>e.account===acct.name && e.date>=openDate && e.date<=dateStr).reduce((s,e)=>s+Number(e.amount),0);
     const transfersOut=state.transfers.filter(t=>t.fromAccount===acct.name && t.date>=openDate && t.date<=dateStr).reduce((s,t)=>s+Number(t.amount),0);
     const transfersIn=state.transfers.filter(t=>t.toAccount===acct.name && t.date>=openDate && t.date<=dateStr).reduce((s,t)=>s+Number(t.amount),0);
+    const assetContribOut=state.assetTx.filter(t=>t.kind==='contribution' && t.account===acct.name && t.date>=openDate && t.date<=dateStr).reduce((s,t)=>s+Number(t.amount),0);
+    const assetWithdrawIn=state.assetTx.filter(t=>t.kind==='withdrawal' && t.account===acct.name && t.date>=openDate && t.date<=dateStr).reduce((s,t)=>s+Number(t.amount),0);
     if(acctIsLiability(acct)){
-      bal += expenseOut - transfersIn + transfersOut - incomeIn;
+      bal += expenseOut - transfersIn + transfersOut - incomeIn + assetContribOut - assetWithdrawIn;
     } else {
-      bal += incomeIn - expenseOut - transfersOut + transfersIn;
+      bal += incomeIn - expenseOut - transfersOut + transfersIn - assetContribOut + assetWithdrawIn;
     }
     return bal;
   }
@@ -630,9 +642,9 @@
     })), [12,10,18,18,14,26]);
 
     addSheet('Accounts', state.accounts.map(a=>({
-      Account:a.name, Type:a.type, 'Asset or Liability':acctIsLiability(a)?'Liability':'Asset',
+      Account:a.name, Type:a.type, Owner:a.owner||'Joint', 'Asset or Liability':acctIsLiability(a)?'Liability':'Asset',
       'Opening Balance (₹)':acctOpeningBalance(a), 'Opening Date':a.openingDate||'—', 'Current Balance (₹)':accountBalance(a)
-    })), [18,10,16,18,14,18]);
+    })), [18,10,10,16,18,14,18]);
 
     addSheet('Goals', state.goals.map(g=>({
       Name:g.name, 'Target Amount (₹)':Number(g.targetAmount), 'Parked In':g.account||'—', 'Saved So Far (₹)':goalBalance(g.id)
@@ -644,16 +656,21 @@
     })), [12,18,10,14,14,24,18]);
 
     addSheet('Assets', state.assets.map(a=>({
-      Name:a.name, Type:a.type, 'Invested (₹)':assetInvested(a.id), 'Current Value (₹)':assetCurrentValue(a.id), 'Gain/Loss (₹)':assetCurrentValue(a.id)-assetInvested(a.id)
-    })), [22,14,14,16,14]);
+      Name:a.name, Type:a.type, Owner:a.owner||'Joint', 'Invested (₹)':assetInvested(a.id), 'Current Value (₹)':assetCurrentValue(a.id), 'Gain/Loss (₹)':assetCurrentValue(a.id)-assetInvested(a.id)
+    })), [22,14,10,14,16,14]);
 
-    addSheet('Asset Activity', state.assetTx.slice().sort(byDate).map(t=>({
-      Date:t.date, Asset:assetName(t.assetId), Type:t.kind, 'Amount (₹)':Number(t.amount), Note:t.fromGoalId?('From goal transfer: '+goalName(t.fromGoalId)):'—'
-    })), [12,22,14,14,30]);
+    addSheet('Asset Activity', state.assetTx.slice().sort(byDate).map(t=>{
+      let note='—';
+      if(t.account) note=(t.kind==='contribution'?'Paid from ':'Deposited to ')+t.account;
+      else if(t.fromGoalId) note='From goal transfer: '+goalName(t.fromGoalId);
+      else if(t.fromAssetId) note='From asset transfer: '+assetName(t.fromAssetId);
+      else if(t.toAssetId) note='Transferred to: '+assetName(t.toAssetId);
+      return { Date:t.date, Asset:assetName(t.assetId), Type:t.kind, 'Amount (₹)':Number(t.amount), Note:note };
+    }), [12,22,14,14,32]);
 
     addSheet('Liabilities', state.liabilities.map(l=>({
-      Name:l.name, Type:l.type, 'Opening Balance (₹)':Number(l.openingBalance), 'Opening Date':l.openingDate||'—', 'Current Balance (₹)':liabilityCurrentBalance(l)
-    })), [20,14,18,14,18]);
+      Name:l.name, Type:l.type, Owner:l.owner||'Joint', 'Opening Balance (₹)':Number(l.openingBalance), 'Opening Date':l.openingDate||'—', 'Current Balance (₹)':liabilityCurrentBalance(l)
+    })), [20,14,10,18,14,18]);
 
     addSheet('Liability Updates', state.liabilityTx.slice().sort(byDate).map(t=>({
       Date:t.date, Liability:liabName(t.liabilityId), 'Balance (₹)':Number(t.amount)
@@ -1283,11 +1300,23 @@
 
   // ---------------- NET WORTH ----------------
   function netWorthHTML(){
-    const totalAssets = state.assets.reduce((s,a)=>s+assetCurrentValue(a.id),0) + state.goals.reduce((s,g)=>s+goalBalance(g.id),0) + state.accounts.filter(a=>!acctIsLiability(a)).reduce((s,a)=>s+accountBalance(a),0);
-    const totalLiabilities = state.liabilities.reduce((s,l)=>s+liabilityCurrentBalance(l),0) + state.accounts.filter(a=>acctIsLiability(a)).reduce((s,a)=>s+accountBalance(a),0);
+    const filter = state.netWorthFilter || 'all';
+    const filterOptions = ['all'].concat(state.people).concat(['Joint']);
+    const filterLabel = f => f==='all' ? 'All (household)' : f;
+
+    const fAccounts = state.accounts.filter(a=>ownerMatches(a.owner, filter));
+    const fAssets = state.assets.filter(a=>ownerMatches(a.owner, filter));
+    const fLiabilities = state.liabilities.filter(l=>ownerMatches(l.owner, filter));
+    const includeGoals = (filter==='all' || filter==='Joint');
+
+    const totalAssets = fAssets.reduce((s,a)=>s+assetCurrentValue(a.id),0)
+      + (includeGoals? state.goals.reduce((s,g)=>s+goalBalance(g.id),0) : 0)
+      + fAccounts.filter(a=>!acctIsLiability(a)).reduce((s,a)=>s+accountBalance(a),0);
+    const totalLiabilities = fLiabilities.reduce((s,l)=>s+liabilityCurrentBalance(l),0)
+      + fAccounts.filter(a=>acctIsLiability(a)).reduce((s,a)=>s+accountBalance(a),0);
     const netWorth = totalAssets - totalLiabilities;
 
-    const acctRows = state.accounts.map(a=>{
+    const acctRows = fAccounts.map(a=>{
       const editing=state._editAcctBalId===a.name;
       const bal=accountBalance(a);
       const isLiab=acctIsLiability(a);
@@ -1296,19 +1325,20 @@
           <div class="form-grid">
             <div><label>Opening balance</label><input type="number" data-edit-acctbal-field="openingBalance" value="${acctOpeningBalance(a)}"></div>
             <div><label>As of date</label><input type="date" data-edit-acctbal-field="openingDate" value="${a.openingDate||todayDate()}"></div>
+            <div><label>Owner</label><select data-edit-acctbal-field="owner">${OWNER_OPTIONS().map(p=>`<option ${acctOwner(a)===p?'selected':''}>${esc(p)}</option>`).join('')}</select></div>
             <div class="checkbox-row" style="align-self:center;"><input type="checkbox" id="acctbal-liab" data-edit-acctbal-field="isLiability" ${isLiab?'checked':''}><label style="margin:0;" for="acctbal-liab">Liability (e.g. credit card)</label></div>
             <div><button class="btn small" data-save-acctbal="${esc(a.name)}">Save</button> <button class="btn secondary small" data-cancel-edit-acctbal="1">Cancel</button></div>
           </div>
         </td></tr>`;
       }
       return `<tr>
-        <td>${esc(a.name)}<div style="font-size:11px;color:var(--ink-soft);">${esc(a.type)} · ${isLiab?'liability':'asset'}${a.openingDate?' · opening '+fmtINR(acctOpeningBalance(a))+' as of '+esc(a.openingDate):' · no opening balance set'}</div></td>
+        <td>${esc(a.name)}<div style="font-size:11px;color:var(--ink-soft);">${esc(a.type)} · ${isLiab?'liability':'asset'} · <b>${esc(acctOwner(a))}</b>${a.openingDate?' · opening '+fmtINR(acctOpeningBalance(a))+' as of '+esc(a.openingDate):' · no opening balance set'}</div></td>
         <td class="amt" style="color:${isLiab?(bal>0?'var(--bad)':'var(--good)'):'var(--ink)'};">${fmtINR(bal)}</td>
         <td class="row-actions"><button data-edit-acctbal="${esc(a.name)}">Edit</button></td>
       </tr>`;
     }).join('');
 
-    const assetRows = state.assets.map(a=>{
+    const assetRows = fAssets.map(a=>{
       const invested=assetInvested(a.id), current=assetCurrentValue(a.id), gain=current-invested;
       const editing=state._editAssetId===a.id;
       if(editing){
@@ -1316,26 +1346,27 @@
           <div class="form-grid">
             <div><label>Name</label><input type="text" data-edit-asset-field="name" value="${esc(a.name)}"></div>
             <div><label>Type</label><select data-edit-asset-field="type">${ASSET_TYPES.map(t=>`<option ${t===a.type?'selected':''}>${esc(t)}</option>`).join('')}</select></div>
+            <div><label>Owner</label><select data-edit-asset-field="owner">${OWNER_OPTIONS().map(p=>`<option ${(a.owner||'Joint')===p?'selected':''}>${esc(p)}</option>`).join('')}</select></div>
             <div><button class="btn small" data-save-asset="${a.id}">Save</button> <button class="btn secondary small" data-cancel-edit-asset="1">Cancel</button></div>
           </div>
         </td></tr>`;
       }
       return `<tr>
-        <td>${esc(a.name)}<div style="font-size:11px;color:var(--ink-soft);">${esc(a.type)}</div></td>
+        <td>${esc(a.name)}<div style="font-size:11px;color:var(--ink-soft);">${esc(a.type)} · <b>${esc(a.owner||'Joint')}</b></div></td>
         <td class="amt">${fmtINR(invested)}</td>
         <td class="amt">${fmtINR(current)}</td>
         <td class="amt" style="color:${gain>=0?'var(--good)':'var(--bad)'};">${gain>=0?'+':''}${fmtINR(gain)}</td>
         <td class="row-actions"><button data-edit-asset="${a.id}">Edit</button><button data-del-asset="${a.id}">Delete</button></td>
       </tr>`;
     }).join('');
-    const goalRows = state.goals.map(g=>`<tr>
-      <td>${esc(g.name)}<div style="font-size:11px;color:var(--ink-soft);">Goal fund</div></td>
+    const goalRows = includeGoals ? state.goals.map(g=>`<tr>
+      <td>${esc(g.name)}<div style="font-size:11px;color:var(--ink-soft);">Goal fund · Joint</div></td>
       <td class="amt">${fmtINR(goalBalance(g.id))}</td>
       <td class="amt">${fmtINR(goalBalance(g.id))}</td>
       <td class="amt">—</td>
       <td></td>
-    </tr>`).join('');
-    const liabRows = state.liabilities.map(l=>{
+    </tr>`).join('') : '';
+    const liabRows = fLiabilities.map(l=>{
       const editing=state._editLiabilityId===l.id;
       if(editing){
         return `<tr><td colspan="4">
@@ -1343,12 +1374,13 @@
             <div><label>Name</label><input type="text" data-edit-liab-field="name" value="${esc(l.name)}"></div>
             <div><label>Type</label><select data-edit-liab-field="type">${LIABILITY_TYPES.map(t=>`<option ${t===l.type?'selected':''}>${esc(t)}</option>`).join('')}</select></div>
             <div><label>Opening</label><input type="number" data-edit-liab-field="openingBalance" value="${l.openingBalance}"></div>
+            <div><label>Owner</label><select data-edit-liab-field="owner">${OWNER_OPTIONS().map(p=>`<option ${(l.owner||'Joint')===p?'selected':''}>${esc(p)}</option>`).join('')}</select></div>
             <div><button class="btn small" data-save-liability="${l.id}">Save</button> <button class="btn secondary small" data-cancel-edit-liab="1">Cancel</button></div>
           </div>
         </td></tr>`;
       }
       return `<tr>
-        <td>${esc(l.name)}<div style="font-size:11px;color:var(--ink-soft);">${esc(l.type)}</div></td>
+        <td>${esc(l.name)}<div style="font-size:11px;color:var(--ink-soft);">${esc(l.type)} · <b>${esc(l.owner||'Joint')}</b></div></td>
         <td class="amt">${fmtINR(l.openingBalance)}</td>
         <td class="amt">${fmtINR(liabilityCurrentBalance(l))}</td>
         <td class="row-actions"><button data-edit-liability="${l.id}">Edit</button><button data-del-liability="${l.id}">Delete</button></td>
@@ -1357,8 +1389,9 @@
 
     const assetOpts=state.assets.map(a=>`<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('');
     const liabOpts=state.liabilities.map(l=>`<option value="${esc(l.id)}">${esc(l.name)}</option>`).join('');
+    const acctOpts=state.accounts.map(a=>`<option value="${esc(a.name)}">${esc(a.name)}</option>`).join('');
 
-    const assetTxTables = state.assets.map(a=>{
+    const assetTxTables = fAssets.map(a=>{
       const tx=assetTxFor(a.id).slice().reverse();
       if(!tx.length) return '';
       const deltas=assetValuationDeltas(a.id);
@@ -1368,7 +1401,7 @@
             const editing=state._editRow===t.id;
             if(editing){
               return `<tr><td><input type="date" data-edit-field="date" value="${esc(t.date)}"></td>
-                <td><select data-edit-field="kind"><option value="contribution" ${t.kind==='contribution'?'selected':''}>contribution</option><option value="valuation" ${t.kind==='valuation'?'selected':''}>valuation</option></select></td>
+                <td><select data-edit-field="kind"><option value="contribution" ${t.kind==='contribution'?'selected':''}>contribution</option><option value="withdrawal" ${t.kind==='withdrawal'?'selected':''}>withdrawal</option><option value="valuation" ${t.kind==='valuation'?'selected':''}>valuation</option></select></td>
                 <td><input type="number" data-edit-field="amount" value="${t.amount}" style="text-align:right;"></td>
                 <td class="row-actions"><button data-save-assettx="${t.id}">Save</button><button data-cancel-edit="1">Cancel</button></td></tr>`;
             }
@@ -1377,15 +1410,21 @@
               const delta=deltas[t.id]||0;
               amtCell=`<span style="color:${delta>=0?'var(--good)':'var(--bad)'};font-weight:600;">${delta>=0?'+':''}${fmtINR(delta)}</span><div style="font-size:10px;color:var(--ink-soft);">value ${fmtINR(t.amount)}</div>`;
             } else {
-              amtCell=fmtINR(t.amount);
+              amtCell=(t.kind==='withdrawal'?'-':'')+fmtINR(t.amount);
             }
-            return `<tr class="${t.transferId?'transfer-row':''}"><td>${esc(t.date)}</td><td>${t.kind}${t.fromGoalId?' (from goal transfer)':''}</td><td class="amt">${amtCell}</td>
+            let noteBits=[];
+            if(t.account) noteBits.push((t.kind==='contribution'?'from ':'to ')+t.account);
+            if(t.fromGoalId) noteBits.push('from goal transfer: '+esc((state.goals.find(g=>g.id===t.fromGoalId)||{}).name||'?'));
+            if(t.fromAssetId) noteBits.push('from asset transfer: '+esc((state.assets.find(x=>x.id===t.fromAssetId)||{}).name||'?'));
+            if(t.toAssetId) noteBits.push('→ '+esc((state.assets.find(x=>x.id===t.toAssetId)||{}).name||'?'));
+            const note=noteBits.length? ' <span style="font-size:10px;color:var(--ink-soft);">('+noteBits.join(', ')+')</span>':'';
+            return `<tr class="${t.transferId?'transfer-row':''}"><td>${esc(t.date)}</td><td>${t.kind}${note}</td><td class="amt">${amtCell}</td>
               <td class="row-actions"><button data-edit-assettx="${t.id}">Edit</button><button data-del-assettx="${t.id}" data-assettx-transferid="${t.transferId||''}">Delete</button></td></tr>`;
           }).join('')}
         </tbody></table>`;
     }).join('');
 
-    const liabTxTables = state.liabilities.map(l=>{
+    const liabTxTables = fLiabilities.map(l=>{
       const tx=liabilityTxFor(l.id).slice().reverse();
       if(!tx.length) return '';
       return `<h4 style="margin-top:14px;">${esc(l.name)} balance history</h4>
@@ -1404,20 +1443,28 @@
     }).join('');
 
     return `
+      <div class="filter-bar">
+        <div><label>Viewing</label>
+          <select id="networth-owner-filter">
+            ${filterOptions.map(f=>`<option value="${esc(f)}" ${filter===f?'selected':''}>${esc(filterLabel(f))}</option>`).join('')}
+          </select>
+        </div>
+        ${filter!=='all'? '<div style="align-self:center;font-size:12px;color:var(--ink-soft);padding-bottom:8px;">Showing accounts/assets/liabilities owned by '+esc(filter)+' or Joint. Goal funds '+(includeGoals?'included (Joint).':'excluded from this person-only view.')+'</div>':''}
+      </div>
       <div class="summary-row">
         <div class="stat"><div class="label">Total assets</div><div class="value">${fmtINR(totalAssets)}</div></div>
         <div class="stat"><div class="label">Total liabilities</div><div class="value">${fmtINR(totalLiabilities)}</div></div>
         <div class="stat"><div class="label">Net worth</div><div class="value ${netWorth>=0?'good':'bad'}">${fmtINR(netWorth)}</div></div>
-        <div class="stat"><div class="label">Goal funds included</div><div class="value">${fmtINR(state.goals.reduce((s,g)=>s+goalBalance(g.id),0))}</div></div>
+        <div class="stat"><div class="label">Goal funds included</div><div class="value">${includeGoals? fmtINR(state.goals.reduce((s,g)=>s+goalBalance(g.id),0)) : '—'}</div></div>
       </div>
 
       <div class="card">
         <h3>Accounts <span class="pill blue">live balance from your entries</span></h3>
-        <div style="font-size:13px;color:var(--ink-soft);margin-bottom:12px;">Set an opening balance for each account below and every income, expense, and transfer you log against it updates the balance automatically. Bank/cash accounts count as assets; cards marked as liabilities count as what you owe.</div>
+        <div style="font-size:13px;color:var(--ink-soft);margin-bottom:12px;">Set an opening balance and owner for each account below. Every income, expense, transfer, and asset contribution/withdrawal you log against it updates the balance automatically.</div>
         <table><thead><tr><th>Account</th><th class="amt">Balance</th><th></th></tr></thead><tbody>
           ${acctRows}
         </tbody></table>
-        ${!state.accounts.length? '<div class="empty">No accounts yet — add one in Setup → Payment modes / accounts.</div>':''}
+        ${!fAccounts.length? '<div class="empty">No accounts in this view — add one in Setup → Payment modes / accounts.</div>':''}
       </div>
 
       <div class="card">
@@ -1425,24 +1472,33 @@
         <table><thead><tr><th>Asset</th><th class="amt">Invested</th><th class="amt">Current value</th><th class="amt">Gain/loss</th><th></th></tr></thead><tbody>
           ${assetRows}${goalRows}
         </tbody></table>
-        ${(!state.assets.length && !state.goals.length)? '<div class="empty">No assets yet.</div>':''}
+        ${(!fAssets.length && !goalRows)? '<div class="empty">No assets in this view.</div>':''}
         <div class="divider"></div>
         <h4>Add an asset (investment, cash, or bank account)</h4>
         <form id="asset-form" class="form-grid">
           <div><label>Name</label><input type="text" name="name" placeholder="e.g. Zerodha equity, HDFC savings" required></div>
           <div><label>Type</label><select name="type">${ASSET_TYPES.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')}</select></div>
+          <div><label>Owner</label><select name="owner">${OWNER_OPTIONS().map(p=>`<option>${esc(p)}</option>`).join('')}</select></div>
           <div><button class="btn" type="submit">Add asset</button></div>
         </form>
         <div class="divider"></div>
-        <h4>Log a contribution or valuation update</h4>
+        <h4>Log a contribution, withdrawal, valuation, or transfer between assets</h4>
         <form id="asset-tx-form" class="form-grid">
-          <div><label>Asset</label><select name="assetId">${assetOpts}</select></div>
+          <div><label>Asset</label><select name="assetId" id="assettx-asset-select">${assetOpts}</select></div>
           <div><label>Date</label><input type="date" name="date" value="${todayDate()}" required></div>
-          <div><label>Type</label><select name="kind"><option value="contribution">Contribution (money added)</option><option value="valuation">Valuation update (current value)</option></select></div>
+          <div><label>Type</label><select name="kind" id="assettx-kind-select">
+            <option value="contribution">Contribution (buy more)</option>
+            <option value="withdrawal">Withdrawal (sell / cash out)</option>
+            <option value="valuation">Valuation update (current value)</option>
+            <option value="transfer">Transfer to another asset (sell this, buy that)</option>
+          </select></div>
+          <div id="assettx-account-field"><label id="assettx-account-label">Paid from account</label><select name="account" id="assettx-account-select">${acctOpts}</select></div>
+          <div id="assettx-destasset-field" style="display:none;"><label>Destination asset</label><select id="assettx-destasset-select">${assetOpts}</select></div>
           <div><label>Amount</label><input type="number" min="0" name="amount" required></div>
           <div><button class="btn" type="submit">Log</button></div>
         </form>
         ${!state.assets.length? '<div class="empty">Add an asset above before logging activity.</div>':''}
+        ${!state.accounts.length? '<div style="font-size:11px;color:var(--ink-soft);margin-top:4px;">Add an account in Setup to enable contribution/withdrawal source tracking.</div>':''}
         ${assetTxTables}
       </div>
 
@@ -1451,7 +1507,7 @@
         <table><thead><tr><th>Liability</th><th class="amt">Opening</th><th class="amt">Current</th><th></th></tr></thead><tbody>
           ${liabRows}
         </tbody></table>
-        ${!state.liabilities.length? '<div class="empty">No liabilities yet.</div>':''}
+        ${!fLiabilities.length? '<div class="empty">No liabilities in this view.</div>':''}
         <div class="divider"></div>
         <h4>Add a liability</h4>
         <form id="liability-form" class="form-grid">
@@ -1459,6 +1515,7 @@
           <div><label>Type</label><select name="type">${LIABILITY_TYPES.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')}</select></div>
           <div><label>Opening balance</label><input type="number" min="0" name="openingBalance" required></div>
           <div><label>As of date</label><input type="date" name="openingDate" value="${todayDate()}"></div>
+          <div><label>Owner</label><select name="owner">${OWNER_OPTIONS().map(p=>`<option>${esc(p)}</option>`).join('')}</select></div>
           <div><button class="btn" type="submit">Add liability</button></div>
         </form>
         <div class="divider"></div>
@@ -1474,6 +1531,7 @@
       </div>
     `;
   }
+
 
   // ---------------- SETUP ----------------
   function setupHTML(){
@@ -1503,11 +1561,12 @@
       </div>
 
       <div class="card"><h3>Payment modes / accounts</h3>
-        <div class="tag-list">${state.accounts.map(a=>`<span class="tag">${esc(a.name)} <span style="color:var(--ink-soft);">(${esc(a.type)})</span> <button data-del-account="${esc(a.name)}">&times;</button></span>`).join('')}</div>
-        <div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">Balances (opening amount, liability flag) are set on the <b>Net Worth</b> tab once an account exists here.</div>
+        <div class="tag-list">${state.accounts.map(a=>`<span class="tag">${esc(a.name)} <span style="color:var(--ink-soft);">(${esc(a.type)} · ${esc(a.owner||'Joint')})</span> <button data-del-account="${esc(a.name)}">&times;</button></span>`).join('')}</div>
+        <div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">Opening balance and liability flag are set on the <b>Net Worth</b> tab once an account exists here.</div>
         <div class="add-inline">
           <input type="text" id="new-account" placeholder="Account name">
           <select id="new-account-type"><option value="cash">Cash</option><option value="card">Card</option><option value="bank">Bank / net banking</option><option value="other">Other</option></select>
+          <select id="new-account-owner">${OWNER_OPTIONS().map(p=>`<option>${esc(p)}</option>`).join('')}</select>
           <button class="btn secondary small" id="add-account-btn">Add</button>
         </div>
       </div>
@@ -1718,18 +1777,45 @@
     }
 
     if(state.activeTab==='networth'){
+      const filterSel=document.getElementById('networth-owner-filter');
+      if(filterSel) filterSel.addEventListener('change', ()=>{ state.netWorthFilter=filterSel.value; saveState(); renderTabContent(); });
       const assetForm=document.getElementById('asset-form');
       if(assetForm) assetForm.addEventListener('submit', async(e)=>{
         e.preventDefault();
         const f=new FormData(assetForm);
-        state.assets.push({id:nextId(), name:f.get('name'), type:f.get('type')});
+        state.assets.push({id:nextId(), name:f.get('name'), type:f.get('type'), owner:f.get('owner')});
         await saveState(); renderTabContent();
       });
+      const kindSel=document.getElementById('assettx-kind-select');
+      function updateAssetTxFieldVisibility(){
+        if(!kindSel) return;
+        const kind=kindSel.value;
+        const acctField=document.getElementById('assettx-account-field');
+        const acctLabel=document.getElementById('assettx-account-label');
+        const destField=document.getElementById('assettx-destasset-field');
+        if(acctField) acctField.style.display = (kind==='contribution'||kind==='withdrawal') ? 'block' : 'none';
+        if(acctLabel) acctLabel.textContent = kind==='withdrawal' ? 'Deposit into account' : 'Paid from account';
+        if(destField) destField.style.display = kind==='transfer' ? 'block' : 'none';
+      }
+      if(kindSel){ kindSel.addEventListener('change', updateAssetTxFieldVisibility); updateAssetTxFieldVisibility(); }
       const assetTxForm=document.getElementById('asset-tx-form');
       if(assetTxForm) assetTxForm.addEventListener('submit', async(e)=>{
         e.preventDefault();
         const f=new FormData(assetTxForm);
-        state.assetTx.push({id:nextId(), assetId:f.get('assetId'), date:f.get('date'), kind:f.get('kind'), amount:Number(f.get('amount'))});
+        const kind=f.get('kind'), assetId=f.get('assetId'), amount=Number(f.get('amount')), date=f.get('date');
+        if(kind==='transfer'){
+          const destSel=document.getElementById('assettx-destasset-select');
+          const destId=destSel?destSel.value:null;
+          if(!destId || destId===assetId){ alert('Choose a different destination asset.'); return; }
+          createLinkedAssetTransfer(assetId, destId, amount, date);
+        } else if(kind==='contribution' || kind==='withdrawal'){
+          const acctSel=document.getElementById('assettx-account-select');
+          const account=acctSel?acctSel.value:null;
+          if(!account){ alert('Choose the account this money is moving '+(kind==='withdrawal'?'into.':'from.')); return; }
+          state.assetTx.push({id:nextId(), assetId, date, kind, amount, account});
+        } else {
+          state.assetTx.push({id:nextId(), assetId, date, kind, amount});
+        }
         await saveState(); renderTabContent();
       });
       document.querySelectorAll('[data-del-asset]').forEach(b=>b.addEventListener('click', async()=>{
@@ -1746,6 +1832,7 @@
           const field=inp.dataset.editAcctbalField;
           if(field==='isLiability') acct.isLiability=inp.checked;
           else if(field==='openingBalance') acct.openingBalance=Number(inp.value||0);
+          else if(field==='owner') acct.owner=inp.value;
           else acct.openingDate=inp.value;
         });
         state._editAcctBalId=null; await saveState(); renderTabContent();
@@ -1771,7 +1858,7 @@
       if(liabForm) liabForm.addEventListener('submit', async(e)=>{
         e.preventDefault();
         const f=new FormData(liabForm);
-        state.liabilities.push({id:nextId(), name:f.get('name'), type:f.get('type'), openingBalance:Number(f.get('openingBalance')), openingDate:f.get('openingDate')});
+        state.liabilities.push({id:nextId(), name:f.get('name'), type:f.get('type'), openingBalance:Number(f.get('openingBalance')), openingDate:f.get('openingDate'), owner:f.get('owner')});
         await saveState(); renderTabContent();
       });
       const liabTxForm=document.getElementById('liability-tx-form');
@@ -1826,7 +1913,8 @@
       if(addAcctBtn) addAcctBtn.addEventListener('click', async()=>{
         const inp=document.getElementById('new-account'); const v=inp.value.trim();
         const type=document.getElementById('new-account-type').value;
-        if(v && !state.accounts.find(a=>a.name===v)){ state.accounts.push({name:v,type}); await saveState(); renderTabContent(); }
+        const owner=document.getElementById('new-account-owner').value;
+        if(v && !state.accounts.find(a=>a.name===v)){ state.accounts.push({name:v,type,owner}); await saveState(); renderTabContent(); }
       });
       document.querySelectorAll('[data-del-account]').forEach(b=>b.addEventListener('click', async()=>{
         state.accounts=state.accounts.filter(a=>a.name!==b.dataset.delAccount); await saveState(); renderTabContent();
