@@ -478,27 +478,37 @@
     const liab=state.liabilities.reduce((s,l)=>s+liabilityBalanceAsOf(l,dateStr),0);
     return assets-liab;
   }
-  // expected-vs-logged balance drift check for cash/bank assets matching an account name
-  function accountDriftCheck(asset){
-    if(!['Cash','Bank Account'].includes(asset.type)) return null;
-    const acct=state.accounts.find(a=>a.name.toLowerCase()===asset.name.toLowerCase());
-    if(!acct) return null;
-    const tx=assetTxFor(asset.id);
-    if(!tx.length) return null;
-    const anchor=tx[0];
-    const anchorDate=anchor.date, anchorAmount=Number(anchor.amount);
-    let expected=anchorAmount;
-    state.income.filter(e=>e.account===acct.name && e.date>anchorDate).forEach(e=>expected+=Number(e.amount));
-    state.expenses.filter(e=>e.account===acct.name && e.date>anchorDate).forEach(e=>expected-=Number(e.amount));
-    state.transfers.filter(t=>t.date>anchorDate).forEach(t=>{
-      if(t.fromAccount===acct.name) expected-=Number(t.amount);
-      if(t.toAccount===acct.name) expected+=Number(t.amount);
-    });
-    const logged=assetCurrentValue(asset.id);
-    const diff=logged-expected;
-    const threshold=Math.max(1000, Math.abs(expected)*0.02);
-    if(Math.abs(diff)>threshold) return {expected,logged,diff};
-    return null;
+  // ---- real account balance tracking (accounts as ledger accounts, not just labels) ----
+  function acctIsLiability(a){ return a.isLiability!=null ? a.isLiability : a.type==='card'; }
+  function acctOpeningBalance(a){ return Number(a.openingBalance||0); }
+  function acctOpeningDate(a){ return a.openingDate || '0000-01-01'; }
+  function accountBalance(acct){
+    const openDate=acctOpeningDate(acct);
+    let bal=acctOpeningBalance(acct);
+    const incomeIn=state.income.filter(e=>e.account===acct.name && e.date>=openDate).reduce((s,e)=>s+Number(e.amount),0);
+    const expenseOut=state.expenses.filter(e=>e.account===acct.name && e.date>=openDate).reduce((s,e)=>s+Number(e.amount),0);
+    const transfersOut=state.transfers.filter(t=>t.fromAccount===acct.name && t.date>=openDate).reduce((s,t)=>s+Number(t.amount),0);
+    const transfersIn=state.transfers.filter(t=>t.toAccount===acct.name && t.date>=openDate).reduce((s,t)=>s+Number(t.amount),0);
+    if(acctIsLiability(acct)){
+      bal += expenseOut - transfersIn + transfersOut - incomeIn;
+    } else {
+      bal += incomeIn - expenseOut - transfersOut + transfersIn;
+    }
+    return bal;
+  }
+  function accountBalanceAsOf(acct,dateStr){
+    const openDate=acctOpeningDate(acct);
+    let bal=acctOpeningBalance(acct);
+    const incomeIn=state.income.filter(e=>e.account===acct.name && e.date>=openDate && e.date<=dateStr).reduce((s,e)=>s+Number(e.amount),0);
+    const expenseOut=state.expenses.filter(e=>e.account===acct.name && e.date>=openDate && e.date<=dateStr).reduce((s,e)=>s+Number(e.amount),0);
+    const transfersOut=state.transfers.filter(t=>t.fromAccount===acct.name && t.date>=openDate && t.date<=dateStr).reduce((s,t)=>s+Number(t.amount),0);
+    const transfersIn=state.transfers.filter(t=>t.toAccount===acct.name && t.date>=openDate && t.date<=dateStr).reduce((s,t)=>s+Number(t.amount),0);
+    if(acctIsLiability(acct)){
+      bal += expenseOut - transfersIn + transfersOut - incomeIn;
+    } else {
+      bal += incomeIn - expenseOut - transfersOut + transfersIn;
+    }
+    return bal;
   }
 
   // ---- charts ----
@@ -583,17 +593,83 @@
   function exportToExcel(){
     if(typeof XLSX==='undefined'){ alert('Export library not loaded — check your internet connection and try again.'); return; }
     const wb=XLSX.utils.book_new();
-    function addSheet(name,rows){ if(!rows.length) rows=[{note:'No data'}]; XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), name.slice(0,31)); }
-    addSheet('Income', state.income);
-    addSheet('Expenses', state.expenses);
-    addSheet('Transfers', state.transfers);
-    addSheet('Goals', state.goals);
-    addSheet('Goal Activity', state.goalTx);
-    addSheet('Assets', state.assets);
-    addSheet('Asset Activity', state.assetTx);
-    addSheet('Liabilities', state.liabilities);
-    addSheet('Liability Updates', state.liabilityTx);
-    addSheet('Allocation Plans', state.allocationVersions.map(v=>({effectiveMonth:v.effectiveMonth, plan:JSON.stringify(v.pct)})));
+    function addSheet(name, rows, colWidths){
+      if(!rows.length) rows=[{'Note':'No data yet'}];
+      const ws=XLSX.utils.json_to_sheet(rows);
+      if(colWidths) ws['!cols']=colWidths.map(w=>({wch:w}));
+      XLSX.utils.book_append_sheet(wb, ws, name.slice(0,31));
+    }
+    const goalName=id=>{ const g=state.goals.find(x=>x.id===id); return g?g.name:'—'; };
+    const assetName=id=>{ const a=state.assets.find(x=>x.id===id); return a?a.name:'—'; };
+    const liabName=id=>{ const l=state.liabilities.find(x=>x.id===id); return l?l.name:'—'; };
+    const byDate=(a,b)=>(a.date||'').localeCompare(b.date||'');
+
+    // Summary
+    const totalAssetsV = state.assets.reduce((s,a)=>s+assetCurrentValue(a.id),0) + state.goals.reduce((s,g)=>s+goalBalance(g.id),0) + state.accounts.filter(a=>!acctIsLiability(a)).reduce((s,a)=>s+accountBalance(a),0);
+    const totalLiabV = state.liabilities.reduce((s,l)=>s+liabilityCurrentBalance(l),0) + state.accounts.filter(a=>acctIsLiability(a)).reduce((s,a)=>s+accountBalance(a),0);
+    addSheet('Summary', [
+      {Metric:'Export date', Value:todayDate()},
+      {Metric:'Total assets (₹)', Value:totalAssetsV},
+      {Metric:'Total liabilities (₹)', Value:totalLiabV},
+      {Metric:'Net worth (₹)', Value:totalAssetsV-totalLiabV},
+      {Metric:'Goal funds saved (₹)', Value:state.goals.reduce((s,g)=>s+goalBalance(g.id),0)},
+      {Metric:'People', Value:state.people.join(', ')},
+    ], [26,20]);
+
+    addSheet('Income', state.income.slice().sort(byDate).map(r=>({
+      Date:r.date, Person:r.person, Source:r.source, Account:r.account||'—', 'Amount (₹)':Number(r.amount)
+    })), [12,10,22,16,14]);
+
+    addSheet('Expenses', state.expenses.slice().sort(byDate).map(r=>({
+      Date:r.date, 'Paid By':r.person, Category:r.category, Description:r.description||'—', Account:r.account||'—',
+      'Amount (₹)':Number(r.amount), Irregular:r.irregular?'Yes':'No', Reason:r.reason||'—'
+    })), [12,10,18,26,16,14,10,24]);
+
+    addSheet('Transfers', state.transfers.slice().sort(byDate).map(r=>({
+      Date:r.date, Person:r.person, 'From Account':r.fromAccount, 'To Account':r.toAccount, 'Amount (₹)':Number(r.amount), Note:r.note||'—'
+    })), [12,10,18,18,14,26]);
+
+    addSheet('Accounts', state.accounts.map(a=>({
+      Account:a.name, Type:a.type, 'Asset or Liability':acctIsLiability(a)?'Liability':'Asset',
+      'Opening Balance (₹)':acctOpeningBalance(a), 'Opening Date':a.openingDate||'—', 'Current Balance (₹)':accountBalance(a)
+    })), [18,10,16,18,14,18]);
+
+    addSheet('Goals', state.goals.map(g=>({
+      Name:g.name, 'Target Amount (₹)':Number(g.targetAmount), 'Parked In':g.account||'—', 'Saved So Far (₹)':goalBalance(g.id)
+    })), [20,16,16,16]);
+
+    addSheet('Goal Activity', state.goalTx.slice().sort(byDate).map(t=>({
+      Date:t.date, Goal:goalName(t.goalId), Person:t.person, Type:t.type, 'Amount (₹)':Number(t.amount),
+      Reason:t.reason||'—', 'Linked Asset':t.toAssetId?assetName(t.toAssetId):'—'
+    })), [12,18,10,14,14,24,18]);
+
+    addSheet('Assets', state.assets.map(a=>({
+      Name:a.name, Type:a.type, 'Invested (₹)':assetInvested(a.id), 'Current Value (₹)':assetCurrentValue(a.id), 'Gain/Loss (₹)':assetCurrentValue(a.id)-assetInvested(a.id)
+    })), [22,14,14,16,14]);
+
+    addSheet('Asset Activity', state.assetTx.slice().sort(byDate).map(t=>({
+      Date:t.date, Asset:assetName(t.assetId), Type:t.kind, 'Amount (₹)':Number(t.amount), Note:t.fromGoalId?('From goal transfer: '+goalName(t.fromGoalId)):'—'
+    })), [12,22,14,14,30]);
+
+    addSheet('Liabilities', state.liabilities.map(l=>({
+      Name:l.name, Type:l.type, 'Opening Balance (₹)':Number(l.openingBalance), 'Opening Date':l.openingDate||'—', 'Current Balance (₹)':liabilityCurrentBalance(l)
+    })), [20,14,18,14,18]);
+
+    addSheet('Liability Updates', state.liabilityTx.slice().sort(byDate).map(t=>({
+      Date:t.date, Liability:liabName(t.liabilityId), 'Balance (₹)':Number(t.amount)
+    })), [12,20,14]);
+
+    let allocRows=[];
+    state.allocationVersions.slice().sort((a,b)=>a.effectiveMonth.localeCompare(b.effectiveMonth)).forEach(v=>{
+      state.people.forEach(p=>{
+        Object.keys(v.pct[p]||{}).forEach(key=>{
+          const label = key.startsWith('goal:') ? goalName(key.slice(5)) : key.slice(4);
+          allocRows.push({'Effective From':monthLabel(v.effectiveMonth), Person:p, 'Category / Goal':label, 'Allocation %':Number(v.pct[p][key])});
+        });
+      });
+    });
+    addSheet('Allocation Plans', allocRows, [16,10,20,14]);
+
     XLSX.writeFile(wb, 'income-allocation-tracker-export-'+todayDate()+'.xlsx');
   }
 
@@ -1207,14 +1283,34 @@
 
   // ---------------- NET WORTH ----------------
   function netWorthHTML(){
-    const totalAssets = state.assets.reduce((s,a)=>s+assetCurrentValue(a.id),0) + state.goals.reduce((s,g)=>s+goalBalance(g.id),0);
-    const totalLiabilities = state.liabilities.reduce((s,l)=>s+liabilityCurrentBalance(l),0);
+    const totalAssets = state.assets.reduce((s,a)=>s+assetCurrentValue(a.id),0) + state.goals.reduce((s,g)=>s+goalBalance(g.id),0) + state.accounts.filter(a=>!acctIsLiability(a)).reduce((s,a)=>s+accountBalance(a),0);
+    const totalLiabilities = state.liabilities.reduce((s,l)=>s+liabilityCurrentBalance(l),0) + state.accounts.filter(a=>acctIsLiability(a)).reduce((s,a)=>s+accountBalance(a),0);
     const netWorth = totalAssets - totalLiabilities;
+
+    const acctRows = state.accounts.map(a=>{
+      const editing=state._editAcctBalId===a.name;
+      const bal=accountBalance(a);
+      const isLiab=acctIsLiability(a);
+      if(editing){
+        return `<tr><td colspan="4">
+          <div class="form-grid">
+            <div><label>Opening balance</label><input type="number" data-edit-acctbal-field="openingBalance" value="${acctOpeningBalance(a)}"></div>
+            <div><label>As of date</label><input type="date" data-edit-acctbal-field="openingDate" value="${a.openingDate||todayDate()}"></div>
+            <div class="checkbox-row" style="align-self:center;"><input type="checkbox" id="acctbal-liab" data-edit-acctbal-field="isLiability" ${isLiab?'checked':''}><label style="margin:0;" for="acctbal-liab">Liability (e.g. credit card)</label></div>
+            <div><button class="btn small" data-save-acctbal="${esc(a.name)}">Save</button> <button class="btn secondary small" data-cancel-edit-acctbal="1">Cancel</button></div>
+          </div>
+        </td></tr>`;
+      }
+      return `<tr>
+        <td>${esc(a.name)}<div style="font-size:11px;color:var(--ink-soft);">${esc(a.type)} · ${isLiab?'liability':'asset'}${a.openingDate?' · opening '+fmtINR(acctOpeningBalance(a))+' as of '+esc(a.openingDate):' · no opening balance set'}</div></td>
+        <td class="amt" style="color:${isLiab?(bal>0?'var(--bad)':'var(--good)'):'var(--ink)'};">${fmtINR(bal)}</td>
+        <td class="row-actions"><button data-edit-acctbal="${esc(a.name)}">Edit</button></td>
+      </tr>`;
+    }).join('');
 
     const assetRows = state.assets.map(a=>{
       const invested=assetInvested(a.id), current=assetCurrentValue(a.id), gain=current-invested;
       const editing=state._editAssetId===a.id;
-      const drift=accountDriftCheck(a);
       if(editing){
         return `<tr><td colspan="5">
           <div class="form-grid">
@@ -1225,7 +1321,7 @@
         </td></tr>`;
       }
       return `<tr>
-        <td>${esc(a.name)}${drift?`<span class="warn-badge" title="Transactions suggest ~${fmtINR(drift.expected)}, last logged ${fmtINR(drift.logged)}">balance may need updating</span>`:''}<div style="font-size:11px;color:var(--ink-soft);">${esc(a.type)}</div></td>
+        <td>${esc(a.name)}<div style="font-size:11px;color:var(--ink-soft);">${esc(a.type)}</div></td>
         <td class="amt">${fmtINR(invested)}</td>
         <td class="amt">${fmtINR(current)}</td>
         <td class="amt" style="color:${gain>=0?'var(--good)':'var(--bad)'};">${gain>=0?'+':''}${fmtINR(gain)}</td>
@@ -1316,6 +1412,15 @@
       </div>
 
       <div class="card">
+        <h3>Accounts <span class="pill blue">live balance from your entries</span></h3>
+        <div style="font-size:13px;color:var(--ink-soft);margin-bottom:12px;">Set an opening balance for each account below and every income, expense, and transfer you log against it updates the balance automatically. Bank/cash accounts count as assets; cards marked as liabilities count as what you owe.</div>
+        <table><thead><tr><th>Account</th><th class="amt">Balance</th><th></th></tr></thead><tbody>
+          ${acctRows}
+        </tbody></table>
+        ${!state.accounts.length? '<div class="empty">No accounts yet — add one in Setup → Payment modes / accounts.</div>':''}
+      </div>
+
+      <div class="card">
         <h3>Assets</h3>
         <table><thead><tr><th>Asset</th><th class="amt">Invested</th><th class="amt">Current value</th><th class="amt">Gain/loss</th><th></th></tr></thead><tbody>
           ${assetRows}${goalRows}
@@ -1399,6 +1504,7 @@
 
       <div class="card"><h3>Payment modes / accounts</h3>
         <div class="tag-list">${state.accounts.map(a=>`<span class="tag">${esc(a.name)} <span style="color:var(--ink-soft);">(${esc(a.type)})</span> <button data-del-account="${esc(a.name)}">&times;</button></span>`).join('')}</div>
+        <div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">Balances (opening amount, liability flag) are set on the <b>Net Worth</b> tab once an account exists here.</div>
         <div class="add-inline">
           <input type="text" id="new-account" placeholder="Account name">
           <select id="new-account-type"><option value="cash">Cash</option><option value="card">Card</option><option value="bank">Bank / net banking</option><option value="other">Other</option></select>
@@ -1632,6 +1738,18 @@
         await saveState(); renderTabContent();
       }));
       document.querySelectorAll('[data-edit-asset]').forEach(b=>b.addEventListener('click', ()=>{ state._editAssetId=b.dataset.editAsset; renderTabContent(); }));
+      document.querySelectorAll('[data-edit-acctbal]').forEach(b=>b.addEventListener('click', ()=>{ state._editAcctBalId=b.dataset.editAcctbal; renderTabContent(); }));
+      document.querySelectorAll('[data-cancel-edit-acctbal]').forEach(b=>b.addEventListener('click', ()=>{ state._editAcctBalId=null; renderTabContent(); }));
+      document.querySelectorAll('[data-save-acctbal]').forEach(b=>b.addEventListener('click', async()=>{
+        const acct=state.accounts.find(a=>a.name===b.dataset.saveAcctbal);
+        document.querySelectorAll('[data-edit-acctbal-field]').forEach(inp=>{
+          const field=inp.dataset.editAcctbalField;
+          if(field==='isLiability') acct.isLiability=inp.checked;
+          else if(field==='openingBalance') acct.openingBalance=Number(inp.value||0);
+          else acct.openingDate=inp.value;
+        });
+        state._editAcctBalId=null; await saveState(); renderTabContent();
+      }));
       document.querySelectorAll('[data-cancel-edit-asset]').forEach(b=>b.addEventListener('click', ()=>{ state._editAssetId=null; renderTabContent(); }));
       document.querySelectorAll('[data-save-asset]').forEach(b=>b.addEventListener('click', async()=>{
         const a=state.assets.find(x=>x.id===b.dataset.saveAsset);
