@@ -141,6 +141,39 @@
   .banner.blue{background:var(--blue-bg);border-color:var(--blue);color:#1d3a63;}
   .banner-row{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px;}
   .banner-row:last-child{margin-bottom:0;}
+
+  @media (max-width:700px){
+    #app{padding:16px 12px 60px;}
+    .app-title{font-size:22px;}
+    .app-title small{font-size:10px;}
+    .session-bar{font-size:11px;}
+    .card{padding:14px 14px;}
+    .card h3{font-size:15px;}
+    .tabs{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;}
+    .tabs::-webkit-scrollbar{display:none;}
+    .tab-btn{flex:0 0 auto;padding:9px 13px;font-size:12.5px;}
+    .card{overflow-x:auto;}
+    table{min-width:520px;}
+    input,select{font-size:16px;padding:10px 9px;}
+    .btn, .btn.small{padding:11px 16px;min-height:40px;}
+    .btn.small{min-height:34px;padding:8px 12px;}
+    .row-actions button{padding:6px 2px;font-size:12.5px;}
+    .form-grid{grid-template-columns:1fr 1fr;}
+    .summary-row{grid-template-columns:1fr 1fr;gap:8px;}
+    .stat{padding:11px 12px;}
+    .stat .value{font-size:17px;}
+    .login-wrap{margin:32px auto;max-width:100%;}
+    .month-nav button{width:36px;height:36px;}
+    .goal-card .form-grid{grid-template-columns:1fr 1fr;}
+    .pct-input-row{grid-template-columns:1fr;gap:4px;padding-bottom:8px;border-bottom:1px solid var(--line-soft);margin-bottom:10px;}
+    .pct-input-row input{text-align:left;}
+  }
+  @media (max-width:420px){
+    .summary-row{grid-template-columns:1fr 1fr;}
+    .form-grid, .goal-card .form-grid{grid-template-columns:1fr;}
+    .app-title{font-size:20px;}
+  }
+
   @media print{
     .tabs, .app-header .session-bar, .month-nav, .no-print{display:none!important;}
     body{background:#fff;}
@@ -1399,6 +1432,16 @@
         <div style="font-size:13px;color:var(--ink-soft);margin-bottom:12px;">Download everything — income, expenses, transfers, goals, assets, liabilities — as an Excel workbook with one sheet per record type.</div>
         <button class="btn secondary" id="export-btn">Export to Excel</button>
       </div>
+
+      <div class="card">
+        <h3>Backup &amp; restore</h3>
+        <div style="font-size:13px;color:var(--ink-soft);margin-bottom:12px;">Download a complete backup of the raw data file, or restore from a previously downloaded one. Restoring <b>replaces everything</b> currently in the tracker — use with care.</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+          <button class="btn secondary" id="backup-download-btn">Download backup (.json)</button>
+          <label class="btn secondary" style="cursor:pointer;">Restore from backup<input type="file" id="backup-restore-input" accept="application/json,.json" style="display:none;"></label>
+        </div>
+        <div id="restore-status" style="font-size:12px;color:var(--ink-soft);margin-top:8px;"></div>
+      </div>
     `;
   }
 
@@ -1707,6 +1750,37 @@
 
       const exportBtn=document.getElementById('export-btn');
       if(exportBtn) exportBtn.addEventListener('click', exportToExcel);
+
+      const backupBtn=document.getElementById('backup-download-btn');
+      if(backupBtn) backupBtn.addEventListener('click', ()=>{
+        const blob=new Blob([JSON.stringify(state,null,2)], {type:'application/json'});
+        const url=URL.createObjectURL(blob);
+        const a=document.createElement('a');
+        a.href=url; a.download='income-allocation-tracker-backup-'+todayDate()+'.json';
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      });
+      const restoreInput=document.getElementById('backup-restore-input');
+      if(restoreInput) restoreInput.addEventListener('change', (e)=>{
+        const file=e.target.files[0];
+        if(!file) return;
+        const statusEl=document.getElementById('restore-status');
+        const reader=new FileReader();
+        reader.onload=async()=>{
+          let parsed;
+          try{ parsed=JSON.parse(reader.result); }
+          catch(err){ statusEl.textContent='That file is not valid JSON — restore cancelled.'; statusEl.style.color='var(--bad)'; return; }
+          const looksValid = parsed && Array.isArray(parsed.income) && Array.isArray(parsed.expenses) && Array.isArray(parsed.people);
+          if(!looksValid){ statusEl.textContent="That file doesn't look like a tracker backup — restore cancelled."; statusEl.style.color='var(--bad)'; return; }
+          const ok=confirm('This will replace ALL current data in the tracker with the contents of this backup file. This cannot be undone. Continue?');
+          if(!ok){ statusEl.textContent='Restore cancelled.'; statusEl.style.color='var(--ink-soft)'; return; }
+          state=Object.assign(defaultState(), parsed);
+          await saveState();
+          statusEl.textContent='Restored successfully from '+file.name+'.'; statusEl.style.color='var(--good)';
+          renderTabContent();
+        };
+        reader.readAsText(file);
+      });
     }
   }
 
