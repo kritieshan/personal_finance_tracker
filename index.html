@@ -483,16 +483,15 @@
   function totalInvestedAsOf(dateStr){ return state.assets.reduce((s,a)=>s+assetInvestedAsOf(a.id,dateStr),0); }
   function totalCurrentValueAsOf(dateStr){ return state.assets.reduce((s,a)=>s+assetCurrentValueAsOf(a.id,dateStr),0); }
   function liabilityTxFor(liabId){ return state.liabilityTx.filter(t=>t.liabilityId===liabId).sort((a,b)=>a.date.localeCompare(b.date)); }
-  function liabilityCurrentBalance(liab){
-    const tx=liabilityTxFor(liab.id);
-    if(tx.length) return Number(tx[tx.length-1].amount);
-    return Number(liab.openingBalance||0);
-  }
   function liabilityBalanceAsOf(liab,dateStr){
-    const tx=liabilityTxFor(liab.id).filter(t=>t.date<=dateStr);
-    if(tx.length) return Number(tx[tx.length-1].amount);
-    return (liab.openingDate||'')<=dateStr ? Number(liab.openingBalance||0) : 0;
+    let bal = (liab.openingDate||'')<=dateStr ? Number(liab.openingBalance||0) : 0;
+    liabilityTxFor(liab.id).filter(t=>t.date<=dateStr).forEach(t=>{
+      if(t.kind==='payment') bal -= Number(t.amount);
+      else bal = Number(t.amount); // 'balance' kind (or legacy entries with no kind) sets the balance directly
+    });
+    return bal;
   }
+  function liabilityCurrentBalance(liab){ return liabilityBalanceAsOf(liab, '9999-99-99'); }
   function netWorthAsOf(dateStr){
     const assets=totalCurrentValueAsOf(dateStr) + state.accounts.filter(a=>!acctIsLiability(a)).reduce((s,a)=>s+accountBalanceAsOf(a,dateStr),0);
     const liab=state.liabilities.reduce((s,l)=>s+liabilityBalanceAsOf(l,dateStr),0) + state.accounts.filter(a=>acctIsLiability(a)).reduce((s,a)=>s+accountBalanceAsOf(a,dateStr),0);
@@ -535,10 +534,11 @@
     // goal contributions/withdrawals are each a real transfer between two accounts: debit fromAccount, credit toAccount, regardless of type
     const goalAcctOut=state.goalTx.filter(t=>(t.type==='contribution'||t.type==='withdrawal') && t.fromAccount===acct.name && t.date>=openDate && t.date<=dateStr).reduce((s,t)=>s+Number(t.amount),0);
     const goalAcctIn=state.goalTx.filter(t=>(t.type==='contribution'||t.type==='withdrawal') && t.toAccount===acct.name && t.date>=openDate && t.date<=dateStr).reduce((s,t)=>s+Number(t.amount),0);
+    const liabPaymentOut=state.liabilityTx.filter(t=>t.kind==='payment' && t.account===acct.name && t.date>=openDate && t.date<=dateStr).reduce((s,t)=>s+Number(t.amount),0);
     if(acctIsLiability(acct)){
-      bal += expenseOut - transfersIn + transfersOut - incomeIn + assetContribOut - assetWithdrawIn + goalAcctOut - goalAcctIn;
+      bal += expenseOut - transfersIn + transfersOut - incomeIn + assetContribOut - assetWithdrawIn + goalAcctOut - goalAcctIn + liabPaymentOut;
     } else {
-      bal += incomeIn - expenseOut - transfersOut + transfersIn - assetContribOut + assetWithdrawIn - goalAcctOut + goalAcctIn;
+      bal += incomeIn - expenseOut - transfersOut + transfersIn - assetContribOut + assetWithdrawIn - goalAcctOut + goalAcctIn - liabPaymentOut;
     }
     return bal;
   }
@@ -694,8 +694,8 @@
     })), [20,14,10,18,14,18]);
 
     addSheet('Liability Updates', state.liabilityTx.slice().sort(byDate).map(t=>({
-      Date:t.date, Liability:liabName(t.liabilityId), 'Balance (₹)':Number(t.amount)
-    })), [12,20,14]);
+      Date:t.date, Liability:liabName(t.liabilityId), Type:t.kind==='payment'?'payment':'balance sync', 'From Account':t.account||'—', 'Amount (₹)':Number(t.amount)
+    })), [12,20,14,16,14]);
 
     let allocRows=[];
     state.allocationVersions.slice().sort((a,b)=>a.effectiveMonth.localeCompare(b.effectiveMonth)).forEach(v=>{
@@ -1417,7 +1417,7 @@
         <td>${esc(l.name)}<div style="font-size:11px;color:var(--ink-soft);">${esc(l.type)} · <b>${esc(l.owner||'Joint')}</b></div></td>
         <td class="amt">${fmtINR(l.openingBalance)}</td>
         <td class="amt">${fmtINR(liabilityBalanceAsOf(l,queryDate))}</td>
-        <td class="row-actions">${isHistorical?'':`<button data-edit-liability="${l.id}">Edit</button><button data-del-liability="${l.id}">Delete</button>`}</td>
+        <td class="row-actions">${isHistorical?'':`<button data-edit-liability="${l.id}">Edit</button><button data-del-liability="${l.id}">Delete</button><button data-convert-liability="${l.id}" title="Best for credit cards — creates a matching Account with automatic expense/payment tracking, so you don't have to manually update the balance.">Convert to account</button>`}</td>
       </tr>`;
     }).join('');
 
@@ -1462,15 +1462,17 @@
       const tx=liabilityTxFor(l.id).slice().reverse();
       if(!tx.length) return '';
       return `<h4 style="margin-top:14px;">${esc(l.name)} balance history</h4>
-        <table><thead><tr><th>Date</th><th class="amt">Balance</th><th></th></tr></thead><tbody>
+        <table><thead><tr><th>Date</th><th>Type</th><th class="amt">Amount</th><th></th></tr></thead><tbody>
           ${tx.map(t=>{
             const editing=state._editRow===t.id;
             if(editing){
               return `<tr><td><input type="date" data-edit-field="date" value="${esc(t.date)}"></td>
+                <td>${t.kind==='payment'?'payment':'balance sync'}</td>
                 <td><input type="number" data-edit-field="amount" value="${t.amount}" style="text-align:right;"></td>
                 <td class="row-actions"><button data-save-liabtx="${t.id}">Save</button><button data-cancel-edit="1">Cancel</button></td></tr>`;
             }
-            return `<tr><td>${esc(t.date)}</td><td class="amt">${fmtINR(t.amount)}</td>
+            const note=t.kind==='payment'&&t.account? ' <span style="font-size:10px;color:var(--ink-soft);">(from '+esc(t.account)+')</span>' : '';
+            return `<tr><td>${esc(t.date)}</td><td>${t.kind==='payment'?'payment':'balance sync'}${note}</td><td class="amt">${t.kind==='payment'?'-':''}${fmtINR(t.amount)}</td>
               <td class="row-actions"><button data-edit-liabtx="${t.id}">Edit</button><button data-del-liabtx="${t.id}">Delete</button></td></tr>`;
           }).join('')}
         </tbody></table>`;
@@ -1575,10 +1577,16 @@
         </form>
         <div class="divider"></div>
         <h4>Update outstanding balance</h4>
+        <div style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">Use <b>"Sync to statement balance"</b> to just type in whatever your loan statement says (no account impact — for interest accrual, fees, etc). Use <b>"Record a payment"</b> when you're paying down the loan from a specific account — this reduces the balance <i>and</i> debits that account.</div>
         <form id="liability-tx-form" class="form-grid">
           <div><label>Liability</label><select name="liabilityId">${liabOpts}</select></div>
           <div><label>Date</label><input type="date" name="date" value="${todayDate()}" required></div>
-          <div><label>Current balance</label><input type="number" min="0" name="amount" required></div>
+          <div><label>Type</label><select name="kind" id="liabtx-kind-select">
+            <option value="balance">Sync to statement balance</option>
+            <option value="payment">Record a payment</option>
+          </select></div>
+          <div id="liabtx-account-field" style="display:none;"><label>Paid from account</label><select name="account">${acctOpts}</select></div>
+          <div><label id="liabtx-amount-label">Current balance</label><input type="number" min="0" name="amount" required></div>
           <div><button class="btn" type="submit">Update</button></div>
         </form>
         ${!state.liabilities.length? '<div class="empty">Add a liability above before updating it.</div>':''}
@@ -1591,6 +1599,7 @@
     const isLiab=acctIsLiability(acct);
     const goalName=id=>{ const g=state.goals.find(x=>x.id===id); return g?g.name:'—'; };
     const assetName=id=>{ const a=state.assets.find(x=>x.id===id); return a?a.name:'—'; };
+    const liabName2=id=>{ const l=state.liabilities.find(x=>x.id===id); return l?l.name:'—'; };
     let raw=[];
     state.income.filter(e=>e.account===acct.name).forEach(e=>raw.push({date:e.date,type:'Income',desc:e.source,person:e.person,base:Number(e.amount)}));
     state.expenses.filter(e=>e.account===acct.name).forEach(e=>raw.push({date:e.date,type:'Expense',desc:e.category+(e.description?': '+e.description:''),person:e.person,base:-Number(e.amount)}));
@@ -1600,6 +1609,7 @@
     state.assetTx.filter(t=>t.kind==='withdrawal'&&t.account===acct.name).forEach(t=>raw.push({date:t.date,type:'Asset sale',desc:assetName(t.assetId),person:'—',base:Number(t.amount)}));
     state.goalTx.filter(t=>(t.type==='contribution'||t.type==='withdrawal') && t.fromAccount===acct.name).forEach(t=>raw.push({date:t.date,type:'Goal '+t.type+' (out)',desc:goalName(t.goalId)+' → '+t.toAccount,person:t.person,base:-Number(t.amount)}));
     state.goalTx.filter(t=>(t.type==='contribution'||t.type==='withdrawal') && t.toAccount===acct.name).forEach(t=>raw.push({date:t.date,type:'Goal '+t.type+' (in)',desc:goalName(t.goalId)+' ← '+t.fromAccount,person:t.person,base:Number(t.amount)}));
+    state.liabilityTx.filter(t=>t.kind==='payment'&&t.account===acct.name).forEach(t=>raw.push({date:t.date,type:'Liability payment',desc:liabName2(t.liabilityId),person:'—',base:-Number(t.amount)}));
     raw.sort((a,b)=>a.date.localeCompare(b.date));
     return raw.map(r=>({date:r.date, type:r.type, desc:r.desc, person:r.person, delta: isLiab? -r.base : r.base}));
   }
@@ -2041,13 +2051,36 @@
         state.liabilities.push({id:nextId(), name:f.get('name'), type:f.get('type'), openingBalance:Number(f.get('openingBalance')), openingDate:f.get('openingDate'), owner:f.get('owner')});
         await saveState(); renderTabContent();
       });
+      const liabKindSel=document.getElementById('liabtx-kind-select');
+      function updateLiabTxFieldVisibility(){
+        if(!liabKindSel) return;
+        const acctField=document.getElementById('liabtx-account-field');
+        const amtLabel=document.getElementById('liabtx-amount-label');
+        if(acctField) acctField.style.display = liabKindSel.value==='payment' ? 'block' : 'none';
+        if(amtLabel) amtLabel.textContent = liabKindSel.value==='payment' ? 'Payment amount' : 'Current balance';
+      }
+      if(liabKindSel){ liabKindSel.addEventListener('change', updateLiabTxFieldVisibility); updateLiabTxFieldVisibility(); }
       const liabTxForm=document.getElementById('liability-tx-form');
       if(liabTxForm) liabTxForm.addEventListener('submit', async(e)=>{
         e.preventDefault();
         const f=new FormData(liabTxForm);
-        state.liabilityTx.push({id:nextId(), liabilityId:f.get('liabilityId'), date:f.get('date'), amount:Number(f.get('amount'))});
+        const kind=f.get('kind')||'balance';
+        const entry={id:nextId(), liabilityId:f.get('liabilityId'), date:f.get('date'), amount:Number(f.get('amount')), kind};
+        if(kind==='payment'){
+          const account=f.get('account');
+          if(!account){ alert('Choose which account this payment came from.'); return; }
+          entry.account=account;
+        }
+        state.liabilityTx.push(entry);
         await saveState(); renderTabContent();
       });
+      document.querySelectorAll('[data-convert-liability]').forEach(b=>b.addEventListener('click', async()=>{
+        const liab=state.liabilities.find(l=>l.id===b.dataset.convertLiability);
+        const ok=confirm('Create a new Account called "'+liab.name+'" (marked as a liability) with its current balance ('+fmtINR(liabilityCurrentBalance(liab))+') as the opening balance? You can then log each expense on it directly instead of manually updating a balance. The original Liability entry is kept as-is — delete it once the new account looks right.');
+        if(!ok) return;
+        state.accounts.push({name:liab.name, type:'card', isLiability:true, owner:liab.owner||'Joint', openingBalance:liabilityCurrentBalance(liab), openingDate:todayDate()});
+        await saveState(); renderTabContent();
+      }));
       document.querySelectorAll('[data-del-liability]').forEach(b=>b.addEventListener('click', async()=>{
         state.liabilities=state.liabilities.filter(l=>l.id!==b.dataset.delLiability);
         state.liabilityTx=state.liabilityTx.filter(t=>t.liabilityId!==b.dataset.delLiability);
