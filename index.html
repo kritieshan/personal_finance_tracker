@@ -103,6 +103,11 @@
 
   .subsection-title{font-family:var(--serif);font-size:15px;font-weight:600;margin:0 0 12px;}
   .divider{height:1px;background:var(--line);margin:22px 0;}
+  details{border-top:1px solid var(--line-soft);padding-top:12px;}
+  details summary{list-style:none;}
+  details summary::-webkit-details-marker{display:none;}
+  details summary:before{content:'+ ';color:var(--brass);font-weight:700;}
+  details[open] summary:before{content:'− ';}
   .pill{display:inline-block;font-size:11px;font-weight:600;padding:2px 9px;border-radius:20px;background:var(--brass-bg);color:#7a5518;margin-left:8px;}
   .pill.blue{background:var(--blue-bg);color:var(--blue);}
   .empty{color:var(--ink-soft);font-size:13px;padding:16px 0;text-align:center;}
@@ -447,28 +452,32 @@
 
   // ---- Net worth helpers ----
   function assetTxFor(assetId){ return state.assetTx.filter(t=>t.assetId===assetId).sort((a,b)=>a.date.localeCompare(b.date)); }
+  // merges manual Net Worth entries with linked Expense/Income entries so an investment logged from Entries
+  // (via "Also counts toward") is the same data everywhere — Analytics, Dashboard, and here
+  function assetLedger(assetId){
+    let entries=assetTxFor(assetId).map(t=>({id:t.id, date:t.date, kind:t.kind, amount:Number(t.amount), source:'manual', transferId:t.transferId, fromGoalId:t.fromGoalId, fromAssetId:t.fromAssetId, toAssetId:t.toAssetId}));
+    state.expenses.filter(e=>e.linkedAssetId===assetId).forEach(e=>entries.push({id:e.id, date:e.date, kind:'contribution', amount:Number(e.amount), source:'expense', desc:e.category+(e.description?': '+e.description:'')}));
+    state.income.filter(e=>e.linkedAssetId===assetId).forEach(e=>entries.push({id:e.id, date:e.date, kind:'withdrawal', amount:Number(e.amount), source:'income', desc:e.source}));
+    return entries.sort((a,b)=>a.date.localeCompare(b.date));
+  }
   function assetValuationDeltas(assetId){
     let baseline=0, deltas={};
-    assetTxFor(assetId).forEach(t=>{
+    assetLedger(assetId).forEach(t=>{
       if(t.kind==='contribution'){ baseline+=Number(t.amount); }
       else if(t.kind==='withdrawal'){ baseline-=Number(t.amount); }
       else if(t.kind==='valuation'){ deltas[t.id]=Number(t.amount)-baseline; baseline=Number(t.amount); }
     });
     return deltas;
   }
-  function assetInvested(assetId){
-    let sum=0;
-    assetTxFor(assetId).forEach(t=>{ if(t.kind==='contribution') sum+=Number(t.amount); else if(t.kind==='withdrawal') sum-=Number(t.amount); });
-    return sum;
-  }
+  function assetInvested(assetId){ return assetInvestedAsOf(assetId,'9999-99-99'); }
   function assetInvestedAsOf(assetId,dateStr){
     let sum=0;
-    assetTxFor(assetId).filter(t=>t.date<=dateStr).forEach(t=>{ if(t.kind==='contribution') sum+=Number(t.amount); else if(t.kind==='withdrawal') sum-=Number(t.amount); });
+    assetLedger(assetId).filter(t=>t.date<=dateStr).forEach(t=>{ if(t.kind==='contribution') sum+=Number(t.amount); else if(t.kind==='withdrawal') sum-=Number(t.amount); });
     return sum;
   }
   function assetCurrentValue(assetId){ return assetCurrentValueAsOf(assetId, '9999-99-99'); }
   function assetCurrentValueAsOf(assetId,dateStr){
-    const tx=assetTxFor(assetId).filter(t=>t.date<=dateStr);
+    const tx=assetLedger(assetId).filter(t=>t.date<=dateStr);
     let lastValIdx=-1;
     tx.forEach((t,i)=>{ if(t.kind==='valuation') lastValIdx=i; });
     if(lastValIdx===-1) return assetInvestedAsOf(assetId,dateStr);
@@ -483,17 +492,24 @@
   function totalInvestedAsOf(dateStr){ return state.assets.reduce((s,a)=>s+assetInvestedAsOf(a.id,dateStr),0); }
   function totalCurrentValueAsOf(dateStr){ return state.assets.reduce((s,a)=>s+assetCurrentValueAsOf(a.id,dateStr),0); }
   function liabilityTxFor(liabId){ return state.liabilityTx.filter(t=>t.liabilityId===liabId).sort((a,b)=>a.date.localeCompare(b.date)); }
+  function liabilityLedger(liabId){
+    let entries=liabilityTxFor(liabId).map(t=>({date:t.date, kind: t.kind==='payment'?'payment':'balance', amount:Number(t.amount), source:'manual', id:t.id}));
+    state.expenses.filter(e=>e.linkedLiabilityId===liabId).forEach(e=>entries.push({date:e.date, kind:'payment', amount:Number(e.amount), source:'expense', id:e.id, desc:e.category+(e.description?': '+e.description:'')}));
+    state.income.filter(e=>e.linkedLiabilityId===liabId).forEach(e=>entries.push({date:e.date, kind:'borrow', amount:Number(e.amount), source:'income', id:e.id, desc:e.source}));
+    return entries.sort((a,b)=>a.date.localeCompare(b.date));
+  }
   function liabilityBalanceAsOf(liab,dateStr){
     let bal = (liab.openingDate||'')<=dateStr ? Number(liab.openingBalance||0) : 0;
-    liabilityTxFor(liab.id).filter(t=>t.date<=dateStr).forEach(t=>{
-      if(t.kind==='payment') bal -= Number(t.amount);
-      else bal = Number(t.amount); // 'balance' kind (or legacy entries with no kind) sets the balance directly
+    liabilityLedger(liab.id).filter(t=>t.date<=dateStr).forEach(t=>{
+      if(t.kind==='payment') bal -= t.amount;
+      else if(t.kind==='borrow') bal += t.amount;
+      else bal = t.amount; // statement balance sync — absolute
     });
     return bal;
   }
   function liabilityCurrentBalance(liab){ return liabilityBalanceAsOf(liab, '9999-99-99'); }
   function netWorthAsOf(dateStr){
-    const assets=totalCurrentValueAsOf(dateStr) + state.accounts.filter(a=>!acctIsLiability(a)).reduce((s,a)=>s+accountBalanceAsOf(a,dateStr),0);
+    const assets=totalCurrentValueAsOf(dateStr) + state.goals.reduce((s,g)=>s+goalBalanceAsOf(g.id,dateStr),0) + state.accounts.filter(a=>!acctIsLiability(a)).reduce((s,a)=>s+accountBalanceAsOf(a,dateStr),0);
     const liab=state.liabilities.reduce((s,l)=>s+liabilityBalanceAsOf(l,dateStr),0) + state.accounts.filter(a=>acctIsLiability(a)).reduce((s,a)=>s+accountBalanceAsOf(a,dateStr),0);
     return assets-liab;
   }
@@ -648,14 +664,19 @@
       {Metric:'People', Value:state.people.join(', ')},
     ], [26,20]);
 
+    const linkLabel=r=>{
+      if(r.linkedAssetId){ const a=state.assets.find(x=>x.id===r.linkedAssetId); return a?a.name:'—'; }
+      if(r.linkedLiabilityId){ const l=state.liabilities.find(x=>x.id===r.linkedLiabilityId); return l?l.name:'—'; }
+      return '—';
+    };
     addSheet('Income', state.income.slice().sort(byDate).map(r=>({
-      Date:r.date, Person:r.person, Source:r.source, Account:r.account||'—', 'Amount (₹)':Number(r.amount)
-    })), [12,10,22,16,14]);
+      Date:r.date, Person:r.person, Source:r.source, Account:r.account||'—', 'Amount (₹)':Number(r.amount), 'Also Counts Toward':linkLabel(r)
+    })), [12,10,22,16,14,20]);
 
     addSheet('Expenses', state.expenses.slice().sort(byDate).map(r=>({
       Date:r.date, 'Paid By':r.person, Category:r.category, Description:r.description||'—', Account:r.account||'—',
-      'Amount (₹)':Number(r.amount), Irregular:r.irregular?'Yes':'No', Reason:r.reason||'—'
-    })), [12,10,18,26,16,14,10,24]);
+      'Amount (₹)':Number(r.amount), Irregular:r.irregular?'Yes':'No', Reason:r.reason||'—', 'Also Counts Toward':linkLabel(r)
+    })), [12,10,18,26,16,14,10,24,20]);
 
     addSheet('Transfers', state.transfers.slice().sort(byDate).map(r=>({
       Date:r.date, Person:r.person, 'From Account':r.fromAccount, 'To Account':r.toAccount, 'Amount (₹)':Number(r.amount), Note:r.note||'—'
@@ -940,7 +961,11 @@
       irregularByLabel[lbl]=(irregularByLabel[lbl]||0)+Number(t.amount);
     });
     const assetSeries=months.map(m=>{const cutoff=m+'-31'; return {label:monthLabel(m), invested:totalInvestedAsOf(cutoff), current:totalCurrentValueAsOf(cutoff)};});
-    const contribSeries=months.map(m=>({label:monthLabel(m), value: state.assetTx.filter(t=>t.kind==='contribution'&&t.date.slice(0,7)===m).reduce((s,t)=>s+Number(t.amount),0)}));
+    const contribSeries=months.map(m=>{
+      let total=0;
+      state.assets.forEach(a=>{ total+=assetLedger(a.id).filter(t=>t.kind==='contribution'&&t.date.slice(0,7)===m).reduce((s,t)=>s+Number(t.amount),0); });
+      return {label:monthLabel(m), value:total};
+    });
     return {months,items,incomeTotal,plannedTotal,actualTotal,itemPlanned,itemActual,personActual,trend,irregular,irregularTrend,irregularByLabel,assetSeries,contribSeries};
   }
   function analyticsHTML(){
@@ -1179,6 +1204,14 @@
     const peopleOpts=state.people.map(p=>`<option value="${esc(p)}" ${p===session.loggedInAs?'selected':''}>${esc(p)}</option>`).join('');
     const catOpts=state.categories.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
     const acctOpts=state.accounts.map(a=>`<option value="${esc(a.name)}">${esc(a.name)}</option>`).join('');
+    const linkOptsFor=mode=>{
+      const assetLabel = mode==='expense' ? 'Buying more of an asset' : 'Selling / withdrawing from an asset';
+      const liabLabel = mode==='expense' ? 'Paying down a liability' : 'New borrowing on a liability';
+      let html='<option value="">— nothing extra —</option>';
+      if(state.assets.length) html+=`<optgroup label="${assetLabel}">`+state.assets.map(a=>`<option value="asset:${esc(a.id)}">${esc(a.name)}</option>`).join('')+'</optgroup>';
+      if(state.liabilities.length) html+=`<optgroup label="${liabLabel}">`+state.liabilities.map(l=>`<option value="liability:${esc(l.id)}">${esc(l.name)}</option>`).join('')+'</optgroup>';
+      return html;
+    };
 
     return `
       <div class="month-nav"><button data-shift="-1">&lsaquo;</button><div class="month-label">${monthLabel(month)}</div><button data-shift="1">&rsaquo;</button></div>
@@ -1190,6 +1223,7 @@
           <div><label>Source</label><input type="text" name="source" placeholder="e.g. Salary, Business" required></div>
           <div><label>Account</label><select name="account">${acctOpts}</select></div>
           <div><label>Amount</label><input type="number" min="0" name="amount" required></div>
+          <div><label>Also counts toward</label><select name="link">${linkOptsFor('income')}</select></div>
           <div><button class="btn" type="submit">Add income</button></div>
         </form>
       </div>
@@ -1202,6 +1236,7 @@
           <div><label>Description</label><input type="text" name="description" placeholder="e.g. Electricity bill"></div>
           <div><label>Account</label><select name="account">${acctOpts}</select></div>
           <div><label>Amount</label><input type="number" min="0" name="amount" required></div>
+          <div><label>Also counts toward</label><select name="link">${linkOptsFor('expense')}</select></div>
           <div class="checkbox-row" style="align-self:center;"><input type="checkbox" id="expense-irregular" name="irregular"><label style="margin:0;" for="expense-irregular">Irregular / one-off</label></div>
           <div><label>Reason (if irregular)</label><input type="text" name="reason" placeholder="Required if irregular"></div>
           <div><button class="btn" type="submit">Add expense</button></div>
@@ -1242,6 +1277,11 @@
       </div>
     `;
   }
+  function linkBadge(r){
+    if(r.linkedAssetId){ const a=state.assets.find(x=>x.id===r.linkedAssetId); return a?` <span class="flag-pill blue">→ ${esc(a.name)}</span>`:''; }
+    if(r.linkedLiabilityId){ const l=state.liabilities.find(x=>x.id===r.linkedLiabilityId); return l?` <span class="flag-pill blue">→ ${esc(l.name)}</span>`:''; }
+    return '';
+  }
   function incomeTable(rows){
     return `<table><thead><tr><th>Date</th><th>Person</th><th>Source</th><th>Account</th><th class="amt">Amount</th><th></th></tr></thead><tbody>
       ${rows.map(r=>{
@@ -1258,7 +1298,7 @@
           </tr>`;
         }
         return `<tr>
-          <td>${esc(r.date)}</td><td>${esc(r.person)}</td><td>${esc(r.source)}</td><td>${esc(r.account||'—')}</td>
+          <td>${esc(r.date)}</td><td>${esc(r.person)}</td><td>${esc(r.source)}${linkBadge(r)}</td><td>${esc(r.account||'—')}</td>
           <td class="amt">${fmtINR(r.amount)}</td>
           <td class="row-actions"><button data-edit-income="${r.id}" ${own?'':'disabled'}>Edit</button><button data-del-income="${r.id}" ${own?'':'disabled'}>Delete</button></td>
         </tr>`;
@@ -1282,7 +1322,7 @@
           </tr>`;
         }
         return `<tr class="${r.irregular?'irregular':''}">
-          <td>${esc(r.date)}</td><td>${esc(r.person)}</td><td>${esc(r.category)}${r.irregular?'<span class="flag-pill">irregular</span>':''}</td>
+          <td>${esc(r.date)}</td><td>${esc(r.person)}</td><td>${esc(r.category)}${r.irregular?'<span class="flag-pill">irregular</span>':''}${linkBadge(r)}</td>
           <td>${esc(r.description||'—')}${r.irregular&&r.reason?`<div style="font-size:11px;color:var(--ink-soft);">${esc(r.reason)}</div>`:''}</td>
           <td>${esc(r.account||'—')}</td><td class="amt">${fmtINR(r.amount)}</td>
           <td class="row-actions"><button data-edit-expense="${r.id}" ${own?'':'disabled'}>Edit</button><button data-del-expense="${r.id}" ${own?'':'disabled'}>Delete</button></td>
@@ -1417,7 +1457,7 @@
         <td>${esc(l.name)}<div style="font-size:11px;color:var(--ink-soft);">${esc(l.type)} · <b>${esc(l.owner||'Joint')}</b></div></td>
         <td class="amt">${fmtINR(l.openingBalance)}</td>
         <td class="amt">${fmtINR(liabilityBalanceAsOf(l,queryDate))}</td>
-        <td class="row-actions">${isHistorical?'':`<button data-edit-liability="${l.id}">Edit</button><button data-del-liability="${l.id}">Delete</button><button data-convert-liability="${l.id}" title="Best for credit cards — creates a matching Account with automatic expense/payment tracking, so you don't have to manually update the balance.">Convert to account</button>`}</td>
+        <td class="row-actions">${isHistorical?'':`<button data-edit-liability="${l.id}">Edit</button><button data-del-liability="${l.id}">Delete</button>`}</td>
       </tr>`;
     }).join('');
 
@@ -1426,13 +1466,13 @@
     const acctOpts=state.accounts.map(a=>`<option value="${esc(a.name)}">${esc(a.name)}</option>`).join('');
 
     const assetTxTables = fAssets.map(a=>{
-      const tx=assetTxFor(a.id).slice().reverse();
+      const tx=assetLedger(a.id).slice().reverse();
       if(!tx.length) return '';
       const deltas=assetValuationDeltas(a.id);
       return `<h4 style="margin-top:14px;">${esc(a.name)} activity</h4>
         <table><thead><tr><th>Date</th><th>Type</th><th class="amt">Amount</th><th></th></tr></thead><tbody>
           ${tx.map(t=>{
-            const editing=state._editRow===t.id;
+            const editing=t.source==='manual' && state._editRow===t.id;
             if(editing){
               return `<tr><td><input type="date" data-edit-field="date" value="${esc(t.date)}"></td>
                 <td><select data-edit-field="kind"><option value="contribution" ${t.kind==='contribution'?'selected':''}>contribution</option><option value="withdrawal" ${t.kind==='withdrawal'?'selected':''}>withdrawal</option><option value="valuation" ${t.kind==='valuation'?'selected':''}>valuation</option></select></td>
@@ -1447,36 +1487,56 @@
               amtCell=(t.kind==='withdrawal'?'-':'')+fmtINR(t.amount);
             }
             let noteBits=[];
-            if(t.account) noteBits.push((t.kind==='contribution'?'from ':'to ')+t.account);
+            if(t.source==='expense') noteBits.push('via Expense: '+esc(t.desc)+' — edit in Entries');
+            if(t.source==='income') noteBits.push('via Income: '+esc(t.desc)+' — edit in Entries');
             if(t.fromGoalId) noteBits.push('from goal transfer: '+esc((state.goals.find(g=>g.id===t.fromGoalId)||{}).name||'?'));
             if(t.fromAssetId) noteBits.push('from asset transfer: '+esc((state.assets.find(x=>x.id===t.fromAssetId)||{}).name||'?'));
             if(t.toAssetId) noteBits.push('→ '+esc((state.assets.find(x=>x.id===t.toAssetId)||{}).name||'?'));
             const note=noteBits.length? ' <span style="font-size:10px;color:var(--ink-soft);">('+noteBits.join(', ')+')</span>':'';
+            const actions=t.source==='manual'
+              ? `<button data-edit-assettx="${t.id}">Edit</button><button data-del-assettx="${t.id}" data-assettx-transferid="${t.transferId||''}">Delete</button>`
+              : '';
             return `<tr class="${t.transferId?'transfer-row':''}"><td>${esc(t.date)}</td><td>${t.kind}${note}</td><td class="amt">${amtCell}</td>
-              <td class="row-actions"><button data-edit-assettx="${t.id}">Edit</button><button data-del-assettx="${t.id}" data-assettx-transferid="${t.transferId||''}">Delete</button></td></tr>`;
+              <td class="row-actions">${actions}</td></tr>`;
           }).join('')}
         </tbody></table>`;
     }).join('');
 
     const liabTxTables = fLiabilities.map(l=>{
-      const tx=liabilityTxFor(l.id).slice().reverse();
+      const tx=liabilityLedger(l.id).slice().reverse();
       if(!tx.length) return '';
       return `<h4 style="margin-top:14px;">${esc(l.name)} balance history</h4>
         <table><thead><tr><th>Date</th><th>Type</th><th class="amt">Amount</th><th></th></tr></thead><tbody>
           ${tx.map(t=>{
-            const editing=state._editRow===t.id;
+            const editing=t.source==='manual' && state._editRow===t.id;
+            const typeLabel=t.kind==='payment'?'payment':(t.kind==='borrow'?'new borrowing':'balance sync');
             if(editing){
               return `<tr><td><input type="date" data-edit-field="date" value="${esc(t.date)}"></td>
-                <td>${t.kind==='payment'?'payment':'balance sync'}</td>
+                <td>${typeLabel}</td>
                 <td><input type="number" data-edit-field="amount" value="${t.amount}" style="text-align:right;"></td>
                 <td class="row-actions"><button data-save-liabtx="${t.id}">Save</button><button data-cancel-edit="1">Cancel</button></td></tr>`;
             }
-            const note=t.kind==='payment'&&t.account? ' <span style="font-size:10px;color:var(--ink-soft);">(from '+esc(t.account)+')</span>' : '';
-            return `<tr><td>${esc(t.date)}</td><td>${t.kind==='payment'?'payment':'balance sync'}${note}</td><td class="amt">${t.kind==='payment'?'-':''}${fmtINR(t.amount)}</td>
-              <td class="row-actions"><button data-edit-liabtx="${t.id}">Edit</button><button data-del-liabtx="${t.id}">Delete</button></td></tr>`;
+            const note=t.source!=='manual'? ` <span style="font-size:10px;color:var(--ink-soft);">(via ${t.source==='expense'?'Expense':'Income'}: ${esc(t.desc)} — edit in Entries)</span>` : '';
+            const amtSign=t.kind==='payment'?'-':(t.kind==='borrow'?'+':'');
+            const actions=t.source==='manual' ? `<button data-edit-liabtx="${t.id}">Edit</button><button data-del-liabtx="${t.id}">Delete</button>` : '';
+            return `<tr><td>${esc(t.date)}</td><td>${typeLabel}${note}</td><td class="amt">${amtSign}${fmtINR(t.amount)}</td>
+              <td class="row-actions">${actions}</td></tr>`;
           }).join('')}
         </tbody></table>`;
     }).join('');
+
+    // trend + allocation chart data
+    const trendMonths=monthsBetween(shiftMonth(state.currentMonth,-11), state.currentMonth);
+    const nwTrend=trendMonths.map(m=>({label:monthLabel(m), value:netWorthAsOf(m+'-31')}));
+    const allocMap={};
+    fAssets.forEach(a=>{ const v=assetCurrentValueAsOf(a.id,queryDate); if(v>0) allocMap[a.type]=(allocMap[a.type]||0)+v; });
+    fAccounts.filter(a=>!acctIsLiability(a)).forEach(a=>{ const v=accountBalanceAsOf(a,queryDate); if(v>0){ const label=a.type==='cash'?'Cash':(a.type==='bank'?'Bank accounts':'Other accounts'); allocMap[label]=(allocMap[label]||0)+v; } });
+    if(includeGoals){ const gv=state.goals.reduce((s,g)=>s+goalBalanceAsOf(g.id,queryDate),0); if(gv>0) allocMap['Goal Funds']=(allocMap['Goal Funds']||0)+gv; }
+    const allocData=Object.keys(allocMap).map((k,i)=>({label:k,value:allocMap[k],color:CHART_COLORS[i%CHART_COLORS.length]}));
+    const liabMap={};
+    fLiabilities.forEach(l=>{ const v=liabilityBalanceAsOf(l,queryDate); if(v>0) liabMap[l.name]=(liabMap[l.name]||0)+v; });
+    fAccounts.filter(a=>acctIsLiability(a)).forEach(a=>{ const v=accountBalanceAsOf(a,queryDate); if(v>0) liabMap[a.name]=(liabMap[a.name]||0)+v; });
+    const liabData=Object.keys(liabMap).map((k,i)=>({label:k,value:liabMap[k],color:CHART_COLORS[i%CHART_COLORS.length]}));
 
     return `
       <div class="filter-bar">
@@ -1503,6 +1563,19 @@
       </div>
 
       <div class="card">
+        <h3>Net worth trend <span class="pill blue">last 12 months, household total</span></h3>
+        ${nwTrend.length>1? lineChart(nwTrend,780,150,'#3167ad') : '<div class="empty">Not enough history yet to show a trend.</div>'}
+      </div>
+      <div class="chart-row">
+        <div class="card"><h4>Asset allocation</h4>
+          ${allocData.length? pieChart(allocData)+`<div class="legend">${allocData.map(d=>`<span><i style="background:${d.color}"></i>${esc(d.label)} · ${fmtINR(d.value)}</span>`).join('')}</div>` : '<div class="empty">No assets to show yet.</div>'}
+        </div>
+        <div class="card"><h4>Liabilities breakdown</h4>
+          ${liabData.length? pieChart(liabData)+`<div class="legend">${liabData.map(d=>`<span><i style="background:${d.color}"></i>${esc(d.label)} · ${fmtINR(d.value)}</span>`).join('')}</div>` : '<div class="empty">No liabilities to show.</div>'}
+        </div>
+      </div>
+
+      <div class="card">
         <h3>Accounts <span class="pill blue">live balance from your entries</span></h3>
         <div style="font-size:13px;color:var(--ink-soft);margin-bottom:12px;">Set an opening balance and owner for each account below. Every income, expense, transfer, and asset contribution/withdrawal you log against it updates the balance automatically.</div>
         <table><thead><tr><th>Account</th><th class="amt">Balance</th><th></th></tr></thead><tbody>
@@ -1510,13 +1583,14 @@
         </tbody></table>
         ${!fAccounts.length? '<div class="empty">No accounts in this view — add one in Setup → Payment modes / accounts.</div>':''}
         ${isHistorical? '' : `
-        <div class="divider"></div>
-        <h4>Start a new financial year</h4>
-        <div style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">Carries each account's current balance forward as a fresh opening point at the date you pick — nothing before it is deleted, and older years stay fully viewable in the Ledger and by switching "As of" above to a past date. This keeps the "opening balance" label from drifting further into the past every year.</div>
+        <details style="margin-top:14px;">
+          <summary style="cursor:pointer;font-family:var(--serif);font-weight:600;font-size:14px;">Start a new financial year</summary>
+        <div style="font-size:12px;color:var(--ink-soft);margin:10px 0;">Carries each account's current balance forward as a fresh opening point at the date you pick — nothing before it is deleted, and older years stay fully viewable in the Ledger and by switching "As of" above to a past date. This keeps the "opening balance" label from drifting further into the past every year.</div>
         <div class="form-grid" style="grid-template-columns:200px 1fr;">
           <div><label>New opening date</label><input type="date" id="rollover-date" value="${(parseInt(fyBounds(currentRealMonth()).start.split('-')[0],10)+1)+'-04-01'}"></div>
           <div><button class="btn secondary" id="rollover-btn">Roll forward all accounts to this date</button></div>
-        </div>`}
+        </div>
+        </details>`}
       </div>
 
       <div class="card">
@@ -1526,7 +1600,9 @@
         </tbody></table>
         ${(!fAssets.length && !goalRows)? '<div class="empty">No assets in this view.</div>':''}
         ${isHistorical? '' : `
-        <div class="divider"></div>
+        <details style="margin-top:14px;">
+          <summary style="cursor:pointer;font-family:var(--serif);font-weight:600;font-size:14px;">Add an asset, or log a valuation / transfer</summary>
+        <div style="margin-top:10px;">
         <h4>Add an asset (investment, cash, or bank account)</h4>
         <form id="asset-form" class="form-grid">
           <div><label>Name</label><input type="text" name="name" placeholder="e.g. Zerodha equity, HDFC savings" required></div>
@@ -1534,27 +1610,25 @@
           <div><label>Owner</label><select name="owner">${OWNER_OPTIONS().map(p=>`<option>${esc(p)}</option>`).join('')}</select></div>
           <div><label>Opening value (optional)</label><input type="number" min="0" name="openingValue" placeholder="e.g. 50000"></div>
           <div><label>As of date</label><input type="date" name="openingDate" value="${todayDate()}"></div>
-          <div><label>Paid from account (optional)</label><select name="openingAccount"><option value="">— not from a tracked account —</option>${state.accounts.map(a=>`<option value="${esc(a.name)}">${esc(a.name)}</option>`).join('')}</select></div>
           <div><button class="btn" type="submit">Add asset</button></div>
         </form>
         <div class="divider"></div>
-        <h4>Log a contribution, withdrawal, valuation, or transfer between assets</h4>
+        <h4>Log a valuation update, or move value into another asset</h4>
+        <div style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">To buy more of an asset or sell/cash out of one, log it as an Expense or Income in <b>Entries</b> and pick this asset under "Also counts toward" — that keeps it in your spend/income analytics too. Use this form only for updating the market value, or moving value between two assets (e.g. sold gold, bought silver).</div>
         <form id="asset-tx-form" class="form-grid">
           <div><label>Asset</label><select name="assetId" id="assettx-asset-select">${assetOpts}</select></div>
           <div><label>Date</label><input type="date" name="date" value="${todayDate()}" required></div>
           <div><label>Type</label><select name="kind" id="assettx-kind-select">
-            <option value="contribution">Contribution (buy more)</option>
-            <option value="withdrawal">Withdrawal (sell / cash out)</option>
             <option value="valuation">Valuation update (current value)</option>
-            <option value="transfer">Transfer to another asset (sell this, buy that)</option>
+            <option value="transfer">Move value into another asset</option>
           </select></div>
-          <div id="assettx-account-field"><label id="assettx-account-label">Paid from account</label><select name="account" id="assettx-account-select">${acctOpts}</select></div>
           <div id="assettx-destasset-field" style="display:none;"><label>Destination asset</label><select id="assettx-destasset-select">${assetOpts}</select></div>
           <div><label>Amount</label><input type="number" min="0" name="amount" required></div>
           <div><button class="btn" type="submit">Log</button></div>
         </form>
         ${!state.assets.length? '<div class="empty">Add an asset above before logging activity.</div>':''}
-        ${!state.accounts.length? '<div style="font-size:11px;color:var(--ink-soft);margin-top:4px;">Add an account in Setup to enable contribution/withdrawal source tracking.</div>':''}
+        </div>
+        </details>
         ${assetTxTables}`}
       </div>
 
@@ -1565,7 +1639,9 @@
         </tbody></table>
         ${!fLiabilities.length? '<div class="empty">No liabilities in this view.</div>':''}
         ${isHistorical? '' : `
-        <div class="divider"></div>
+        <details style="margin-top:14px;">
+          <summary style="cursor:pointer;font-family:var(--serif);font-weight:600;font-size:14px;">Add a liability, or sync a balance</summary>
+        <div style="margin-top:10px;">
         <h4>Add a liability</h4>
         <form id="liability-form" class="form-grid">
           <div><label>Name</label><input type="text" name="name" placeholder="e.g. Car loan" required></div>
@@ -1576,20 +1652,17 @@
           <div><button class="btn" type="submit">Add liability</button></div>
         </form>
         <div class="divider"></div>
-        <h4>Update outstanding balance</h4>
-        <div style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">Use <b>"Sync to statement balance"</b> to just type in whatever your loan statement says (no account impact — for interest accrual, fees, etc). Use <b>"Record a payment"</b> when you're paying down the loan from a specific account — this reduces the balance <i>and</i> debits that account.</div>
+        <h4>Sync outstanding balance</h4>
+        <div style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">Type in whatever your loan statement says whenever you check it. Making an actual EMI/extra payment? Log it as an Expense in <b>Entries</b> and pick this loan under "Also counts toward" — that reduces this balance and shows up in your spend analytics too.</div>
         <form id="liability-tx-form" class="form-grid">
           <div><label>Liability</label><select name="liabilityId">${liabOpts}</select></div>
           <div><label>Date</label><input type="date" name="date" value="${todayDate()}" required></div>
-          <div><label>Type</label><select name="kind" id="liabtx-kind-select">
-            <option value="balance">Sync to statement balance</option>
-            <option value="payment">Record a payment</option>
-          </select></div>
-          <div id="liabtx-account-field" style="display:none;"><label>Paid from account</label><select name="account">${acctOpts}</select></div>
-          <div><label id="liabtx-amount-label">Current balance</label><input type="number" min="0" name="amount" required></div>
+          <div><label>Current balance</label><input type="number" min="0" name="amount" required></div>
           <div><button class="btn" type="submit">Update</button></div>
         </form>
         ${!state.liabilities.length? '<div class="empty">Add a liability above before updating it.</div>':''}
+        </div>
+        </details>
         ${liabTxTables}`}
       </div>
     `;
@@ -1600,9 +1673,14 @@
     const goalName=id=>{ const g=state.goals.find(x=>x.id===id); return g?g.name:'—'; };
     const assetName=id=>{ const a=state.assets.find(x=>x.id===id); return a?a.name:'—'; };
     const liabName2=id=>{ const l=state.liabilities.find(x=>x.id===id); return l?l.name:'—'; };
+    const linkNote=e=>{
+      if(e.linkedAssetId){ const a=state.assets.find(x=>x.id===e.linkedAssetId); return a?' (→ '+a.name+')':''; }
+      if(e.linkedLiabilityId){ const l=state.liabilities.find(x=>x.id===e.linkedLiabilityId); return l?' (→ '+l.name+')':''; }
+      return '';
+    };
     let raw=[];
-    state.income.filter(e=>e.account===acct.name).forEach(e=>raw.push({date:e.date,type:'Income',desc:e.source,person:e.person,base:Number(e.amount)}));
-    state.expenses.filter(e=>e.account===acct.name).forEach(e=>raw.push({date:e.date,type:'Expense',desc:e.category+(e.description?': '+e.description:''),person:e.person,base:-Number(e.amount)}));
+    state.income.filter(e=>e.account===acct.name).forEach(e=>raw.push({date:e.date,type:'Income',desc:e.source+linkNote(e),person:e.person,base:Number(e.amount)}));
+    state.expenses.filter(e=>e.account===acct.name).forEach(e=>raw.push({date:e.date,type:'Expense',desc:e.category+(e.description?': '+e.description:'')+linkNote(e),person:e.person,base:-Number(e.amount)}));
     state.transfers.filter(t=>t.fromAccount===acct.name).forEach(t=>raw.push({date:t.date,type:'Transfer out',desc:'To '+t.toAccount+(t.note?' — '+t.note:''),person:t.person,base:-Number(t.amount)}));
     state.transfers.filter(t=>t.toAccount===acct.name).forEach(t=>raw.push({date:t.date,type:'Transfer in',desc:'From '+t.fromAccount+(t.note?' — '+t.note:''),person:t.person,base:Number(t.amount)}));
     state.assetTx.filter(t=>t.kind==='contribution'&&t.account===acct.name).forEach(t=>raw.push({date:t.date,type:'Asset purchase',desc:assetName(t.assetId),person:'—',base:-Number(t.amount)}));
@@ -1771,7 +1849,11 @@
         e.preventDefault();
         const f=new FormData(incForm);
         if(!canEdit(f.get('person'))){ alert("You can only add entries under your own name."); return; }
-        state.income.push({id:nextId(), date:f.get('date'), person:f.get('person'), source:f.get('source'), account:f.get('account'), amount:Number(f.get('amount'))});
+        const entry={id:nextId(), date:f.get('date'), person:f.get('person'), source:f.get('source'), account:f.get('account'), amount:Number(f.get('amount'))};
+        const link=f.get('link');
+        if(link&&link.startsWith('asset:')) entry.linkedAssetId=link.slice(6);
+        else if(link&&link.startsWith('liability:')) entry.linkedLiabilityId=link.slice(10);
+        state.income.push(entry);
         await saveState(); renderTabContent();
       });
       const expForm=document.getElementById('expense-form');
@@ -1782,7 +1864,11 @@
         const irregular=!!f.get('irregular');
         const reason=f.get('reason');
         if(irregular && !reason){ alert('Please add a reason for this irregular expense.'); return; }
-        state.expenses.push({id:nextId(), date:f.get('date'), person:f.get('person'), category:f.get('category'), description:f.get('description'), account:f.get('account'), amount:Number(f.get('amount')), irregular, reason});
+        const entry={id:nextId(), date:f.get('date'), person:f.get('person'), category:f.get('category'), description:f.get('description'), account:f.get('account'), amount:Number(f.get('amount')), irregular, reason};
+        const link=f.get('link');
+        if(link&&link.startsWith('asset:')) entry.linkedAssetId=link.slice(6);
+        else if(link&&link.startsWith('liability:')) entry.linkedLiabilityId=link.slice(10);
+        state.expenses.push(entry);
         await saveState(); renderTabContent();
       });
       const trnForm=document.getElementById('transfer-form');
@@ -1966,22 +2052,15 @@
         state.assets.push({id:newId, name:f.get('name'), type:f.get('type'), owner:f.get('owner')});
         const openingValue=Number(f.get('openingValue')||0);
         if(openingValue>0){
-          const entry={id:nextId(), assetId:newId, date:f.get('openingDate')||todayDate(), kind:'contribution', amount:openingValue};
-          if(f.get('openingAccount')) entry.account=f.get('openingAccount');
-          state.assetTx.push(entry);
+          state.assetTx.push({id:nextId(), assetId:newId, date:f.get('openingDate')||todayDate(), kind:'contribution', amount:openingValue});
         }
         await saveState(); renderTabContent();
       });
       const kindSel=document.getElementById('assettx-kind-select');
       function updateAssetTxFieldVisibility(){
         if(!kindSel) return;
-        const kind=kindSel.value;
-        const acctField=document.getElementById('assettx-account-field');
-        const acctLabel=document.getElementById('assettx-account-label');
         const destField=document.getElementById('assettx-destasset-field');
-        if(acctField) acctField.style.display = (kind==='contribution'||kind==='withdrawal') ? 'block' : 'none';
-        if(acctLabel) acctLabel.textContent = kind==='withdrawal' ? 'Deposit into account' : 'Paid from account';
-        if(destField) destField.style.display = kind==='transfer' ? 'block' : 'none';
+        if(destField) destField.style.display = kindSel.value==='transfer' ? 'block' : 'none';
       }
       if(kindSel){ kindSel.addEventListener('change', updateAssetTxFieldVisibility); updateAssetTxFieldVisibility(); }
       const assetTxForm=document.getElementById('asset-tx-form');
@@ -1994,13 +2073,8 @@
           const destId=destSel?destSel.value:null;
           if(!destId || destId===assetId){ alert('Choose a different destination asset.'); return; }
           createLinkedAssetTransfer(assetId, destId, amount, date);
-        } else if(kind==='contribution' || kind==='withdrawal'){
-          const acctSel=document.getElementById('assettx-account-select');
-          const account=acctSel?acctSel.value:null;
-          if(!account){ alert('Choose the account this money is moving '+(kind==='withdrawal'?'into.':'from.')); return; }
-          state.assetTx.push({id:nextId(), assetId, date, kind, amount, account});
         } else {
-          state.assetTx.push({id:nextId(), assetId, date, kind, amount});
+          state.assetTx.push({id:nextId(), assetId, date, kind:'valuation', amount});
         }
         await saveState(); renderTabContent();
       });
@@ -2051,36 +2125,13 @@
         state.liabilities.push({id:nextId(), name:f.get('name'), type:f.get('type'), openingBalance:Number(f.get('openingBalance')), openingDate:f.get('openingDate'), owner:f.get('owner')});
         await saveState(); renderTabContent();
       });
-      const liabKindSel=document.getElementById('liabtx-kind-select');
-      function updateLiabTxFieldVisibility(){
-        if(!liabKindSel) return;
-        const acctField=document.getElementById('liabtx-account-field');
-        const amtLabel=document.getElementById('liabtx-amount-label');
-        if(acctField) acctField.style.display = liabKindSel.value==='payment' ? 'block' : 'none';
-        if(amtLabel) amtLabel.textContent = liabKindSel.value==='payment' ? 'Payment amount' : 'Current balance';
-      }
-      if(liabKindSel){ liabKindSel.addEventListener('change', updateLiabTxFieldVisibility); updateLiabTxFieldVisibility(); }
       const liabTxForm=document.getElementById('liability-tx-form');
       if(liabTxForm) liabTxForm.addEventListener('submit', async(e)=>{
         e.preventDefault();
         const f=new FormData(liabTxForm);
-        const kind=f.get('kind')||'balance';
-        const entry={id:nextId(), liabilityId:f.get('liabilityId'), date:f.get('date'), amount:Number(f.get('amount')), kind};
-        if(kind==='payment'){
-          const account=f.get('account');
-          if(!account){ alert('Choose which account this payment came from.'); return; }
-          entry.account=account;
-        }
-        state.liabilityTx.push(entry);
+        state.liabilityTx.push({id:nextId(), liabilityId:f.get('liabilityId'), date:f.get('date'), amount:Number(f.get('amount'))});
         await saveState(); renderTabContent();
       });
-      document.querySelectorAll('[data-convert-liability]').forEach(b=>b.addEventListener('click', async()=>{
-        const liab=state.liabilities.find(l=>l.id===b.dataset.convertLiability);
-        const ok=confirm('Create a new Account called "'+liab.name+'" (marked as a liability) with its current balance ('+fmtINR(liabilityCurrentBalance(liab))+') as the opening balance? You can then log each expense on it directly instead of manually updating a balance. The original Liability entry is kept as-is — delete it once the new account looks right.');
-        if(!ok) return;
-        state.accounts.push({name:liab.name, type:'card', isLiability:true, owner:liab.owner||'Joint', openingBalance:liabilityCurrentBalance(liab), openingDate:todayDate()});
-        await saveState(); renderTabContent();
-      }));
       document.querySelectorAll('[data-del-liability]').forEach(b=>b.addEventListener('click', async()=>{
         state.liabilities=state.liabilities.filter(l=>l.id!==b.dataset.delLiability);
         state.liabilityTx=state.liabilityTx.filter(t=>t.liabilityId!==b.dataset.delLiability);
