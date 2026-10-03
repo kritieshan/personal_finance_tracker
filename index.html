@@ -221,6 +221,7 @@
     let out=(rest?rest+',':'')+last3;
     return (neg?'-':'')+'₹'+out;
   }
+  function fmtDate(d){ if(!d) return '—'; const parts=String(d).split('-'); if(parts.length!==3) return d; return parts[2]+'-'+parts[1]+'-'+parts[0]; }
   function monthLabel(m){ const [y,mm]=m.split('-'); return MONTHS[parseInt(mm,10)-1]+' '+y.slice(2); }
   function shiftMonth(m,delta){
     let [y,mm]=m.split('-').map(Number);
@@ -388,7 +389,7 @@
   }
   function monthIncomeByPerson(month){
     const out={}; state.people.forEach(p=>out[p]=0);
-    state.income.filter(e=>e.date.slice(0,7)===month).forEach(e=>{ out[e.person]=(out[e.person]||0)+Number(e.amount); });
+    state.income.filter(e=>e.date.slice(0,7)===month && e.countsTowardAllocation!==false).forEach(e=>{ out[e.person]=(out[e.person]||0)+Number(e.amount); });
     return out;
   }
   function monthExpenseByPersonCategory(month){
@@ -456,8 +457,9 @@
   // (via "Also counts toward") is the same data everywhere — Analytics, Dashboard, and here
   function assetLedger(assetId){
     let entries=assetTxFor(assetId).map(t=>({id:t.id, date:t.date, kind:t.kind, amount:Number(t.amount), source:'manual', transferId:t.transferId, fromGoalId:t.fromGoalId, fromAssetId:t.fromAssetId, toAssetId:t.toAssetId}));
-    state.expenses.filter(e=>e.linkedAssetId===assetId).forEach(e=>entries.push({id:e.id, date:e.date, kind:'contribution', amount:Number(e.amount), source:'expense', desc:e.category+(e.description?': '+e.description:'')}));
-    state.income.filter(e=>e.linkedAssetId===assetId).forEach(e=>entries.push({id:e.id, date:e.date, kind:'withdrawal', amount:Number(e.amount), source:'income', desc:e.source}));
+    // direction is explicit (linkedAssetDirection); legacy entries without it default to the old assumption (expense=contribution, income=withdrawal)
+    state.expenses.filter(e=>e.linkedAssetId===assetId).forEach(e=>entries.push({id:e.id, date:e.date, kind:e.linkedAssetDirection||'contribution', amount:Number(e.amount), source:'expense', desc:e.category+(e.description?': '+e.description:'')}));
+    state.income.filter(e=>e.linkedAssetId===assetId).forEach(e=>entries.push({id:e.id, date:e.date, kind:e.linkedAssetDirection||'withdrawal', amount:Number(e.amount), source:'income', desc:e.source}));
     return entries.sort((a,b)=>a.date.localeCompare(b.date));
   }
   function assetValuationDeltas(assetId){
@@ -494,8 +496,9 @@
   function liabilityTxFor(liabId){ return state.liabilityTx.filter(t=>t.liabilityId===liabId).sort((a,b)=>a.date.localeCompare(b.date)); }
   function liabilityLedger(liabId){
     let entries=liabilityTxFor(liabId).map(t=>({date:t.date, kind: t.kind==='payment'?'payment':'balance', amount:Number(t.amount), source:'manual', id:t.id}));
-    state.expenses.filter(e=>e.linkedLiabilityId===liabId).forEach(e=>entries.push({date:e.date, kind:'payment', amount:Number(e.amount), source:'expense', id:e.id, desc:e.category+(e.description?': '+e.description:'')}));
-    state.income.filter(e=>e.linkedLiabilityId===liabId).forEach(e=>entries.push({date:e.date, kind:'borrow', amount:Number(e.amount), source:'income', id:e.id, desc:e.source}));
+    // direction is explicit (linkedLiabilityDirection); legacy entries without it default to the old assumption (expense=payment, income=borrow)
+    state.expenses.filter(e=>e.linkedLiabilityId===liabId).forEach(e=>entries.push({date:e.date, kind:e.linkedLiabilityDirection||'payment', amount:Number(e.amount), source:'expense', id:e.id, desc:e.category+(e.description?': '+e.description:'')}));
+    state.income.filter(e=>e.linkedLiabilityId===liabId).forEach(e=>entries.push({date:e.date, kind:e.linkedLiabilityDirection||'borrow', amount:Number(e.amount), source:'income', id:e.id, desc:e.source}));
     return entries.sort((a,b)=>a.date.localeCompare(b.date));
   }
   function liabilityBalanceAsOf(liab,dateStr){
@@ -656,7 +659,7 @@
     const totalAssetsV = state.assets.reduce((s,a)=>s+assetCurrentValue(a.id),0) + state.goals.reduce((s,g)=>s+goalBalance(g.id),0) + state.accounts.filter(a=>!acctIsLiability(a)).reduce((s,a)=>s+accountBalance(a),0);
     const totalLiabV = state.liabilities.reduce((s,l)=>s+liabilityCurrentBalance(l),0) + state.accounts.filter(a=>acctIsLiability(a)).reduce((s,a)=>s+accountBalance(a),0);
     addSheet('Summary', [
-      {Metric:'Export date', Value:todayDate()},
+      {Metric:'Export date', Value:fmtDate(todayDate())},
       {Metric:'Total assets (₹)', Value:totalAssetsV},
       {Metric:'Total liabilities (₹)', Value:totalLiabV},
       {Metric:'Net worth (₹)', Value:totalAssetsV-totalLiabV},
@@ -665,26 +668,26 @@
     ], [26,20]);
 
     const linkLabel=r=>{
-      if(r.linkedAssetId){ const a=state.assets.find(x=>x.id===r.linkedAssetId); return a?a.name:'—'; }
-      if(r.linkedLiabilityId){ const l=state.liabilities.find(x=>x.id===r.linkedLiabilityId); return l?l.name:'—'; }
+      if(r.linkedAssetId){ const a=state.assets.find(x=>x.id===r.linkedAssetId); const dir=r.linkedAssetDirection==='withdrawal'?'withdrawal':'contribution'; return a?(a.name+' ('+dir+')'):'—'; }
+      if(r.linkedLiabilityId){ const l=state.liabilities.find(x=>x.id===r.linkedLiabilityId); const dir=r.linkedLiabilityDirection==='borrow'?'new borrowing':'payment'; return l?(l.name+' ('+dir+')'):'—'; }
       return '—';
     };
     addSheet('Income', state.income.slice().sort(byDate).map(r=>({
-      Date:r.date, Person:r.person, Source:r.source, Account:r.account||'—', 'Amount (₹)':Number(r.amount), 'Also Counts Toward':linkLabel(r)
+      Date:fmtDate(r.date), Person:r.person, Source:r.source, Account:r.account||'—', 'Amount (₹)':Number(r.amount), 'Also Counts Toward':linkLabel(r)
     })), [12,10,22,16,14,20]);
 
     addSheet('Expenses', state.expenses.slice().sort(byDate).map(r=>({
-      Date:r.date, 'Paid By':r.person, Category:r.category, Description:r.description||'—', Account:r.account||'—',
+      Date:fmtDate(r.date), 'Paid By':r.person, Category:r.category, Description:r.description||'—', Account:r.account||'—',
       'Amount (₹)':Number(r.amount), Irregular:r.irregular?'Yes':'No', Reason:r.reason||'—', 'Also Counts Toward':linkLabel(r)
     })), [12,10,18,26,16,14,10,24,20]);
 
     addSheet('Transfers', state.transfers.slice().sort(byDate).map(r=>({
-      Date:r.date, Person:r.person, 'From Account':r.fromAccount, 'To Account':r.toAccount, 'Amount (₹)':Number(r.amount), Note:r.note||'—'
+      Date:fmtDate(r.date), Person:r.person, 'From Account':r.fromAccount, 'To Account':r.toAccount, 'Amount (₹)':Number(r.amount), Note:r.note||'—'
     })), [12,10,18,18,14,26]);
 
     addSheet('Accounts', state.accounts.map(a=>({
       Account:a.name, Type:a.type, Owner:a.owner||'Joint', 'Asset or Liability':acctIsLiability(a)?'Liability':'Asset',
-      'Opening Balance (₹)':acctOpeningBalance(a), 'Opening Date':acctOpeningDate(a)||'—', 'Current Balance (₹)':accountBalance(a)
+      'Opening Balance (₹)':acctOpeningBalance(a), 'Opening Date':acctOpeningDate(a)?fmtDate(acctOpeningDate(a)):'—', 'Current Balance (₹)':accountBalance(a)
     })), [18,10,10,16,18,14,18]);
 
     addSheet('Goals', state.goals.map(g=>({
@@ -692,7 +695,7 @@
     })), [20,16,16,16]);
 
     addSheet('Goal Activity', state.goalTx.slice().sort(byDate).map(t=>({
-      Date:t.date, Goal:goalName(t.goalId), Person:t.person, Type:t.type, 'Amount (₹)':Number(t.amount),
+      Date:fmtDate(t.date), Goal:goalName(t.goalId), Person:t.person, Type:t.type, 'Amount (₹)':Number(t.amount),
       'From Account':t.fromAccount||'—', 'To Account':t.toAccount||'—',
       Reason:t.reason||'—', 'Linked Asset':t.toAssetId?assetName(t.toAssetId):'—'
     })), [12,18,10,14,14,16,16,24,18]);
@@ -707,15 +710,15 @@
       else if(t.fromGoalId) note='From goal transfer: '+goalName(t.fromGoalId);
       else if(t.fromAssetId) note='From asset transfer: '+assetName(t.fromAssetId);
       else if(t.toAssetId) note='Transferred to: '+assetName(t.toAssetId);
-      return { Date:t.date, Asset:assetName(t.assetId), Type:t.kind, 'Amount (₹)':Number(t.amount), Note:note };
+      return { Date:fmtDate(t.date), Asset:assetName(t.assetId), Type:t.kind, 'Amount (₹)':Number(t.amount), Note:note };
     }), [12,22,14,14,32]);
 
     addSheet('Liabilities', state.liabilities.map(l=>({
-      Name:l.name, Type:l.type, Owner:l.owner||'Joint', 'Opening Balance (₹)':Number(l.openingBalance), 'Opening Date':l.openingDate||'—', 'Current Balance (₹)':liabilityCurrentBalance(l)
+      Name:l.name, Type:l.type, Owner:l.owner||'Joint', 'Opening Balance (₹)':Number(l.openingBalance), 'Opening Date':l.openingDate?fmtDate(l.openingDate):'—', 'Current Balance (₹)':liabilityCurrentBalance(l)
     })), [20,14,10,18,14,18]);
 
     addSheet('Liability Updates', state.liabilityTx.slice().sort(byDate).map(t=>({
-      Date:t.date, Liability:liabName(t.liabilityId), Type:t.kind==='payment'?'payment':'balance sync', 'From Account':t.account||'—', 'Amount (₹)':Number(t.amount)
+      Date:fmtDate(t.date), Liability:liabName(t.liabilityId), Type:t.kind==='payment'?'payment':'balance sync', 'From Account':t.account||'—', 'Amount (₹)':Number(t.amount)
     })), [12,20,14,16,14]);
 
     let allocRows=[];
@@ -742,7 +745,7 @@
         <div class="session-bar">${demoMode?'<span class="pill blue">Preview mode — nothing is saved</span>':`Signed in as <b>${esc(session.loggedInAs)}</b> (${esc(session.email)})`} &nbsp;·&nbsp; <span id="save-status" style="font-family:var(--mono);"></span> ${!demoMode?'&nbsp;·&nbsp;<button id="refresh-btn">Refresh</button>':''} &nbsp;·&nbsp; <button id="logout-btn">${demoMode?'Exit preview':'Sign out'}</button></div>
       </div>
       <div class="tabs">
-        ${['dashboard','analytics','goals','entries','networth','ledger','setup'].map(t=>`<button class="tab-btn ${state.activeTab===t?'active':''}" data-tab="${t}">${t==='networth'?'Net Worth':t.charAt(0).toUpperCase()+t.slice(1)}</button>`).join('')}
+        ${['dashboard','analytics','combined','goals','entries','networth','ledger','setup'].map(t=>`<button class="tab-btn ${state.activeTab===t?'active':''}" data-tab="${t}">${t==='networth'?'Net Worth':t.charAt(0).toUpperCase()+t.slice(1)}</button>`).join('')}
       </div>
       <div id="tab-content"></div>
     `;
@@ -760,6 +763,7 @@
     const c=document.getElementById('tab-content');
     if(state.activeTab==='dashboard') c.innerHTML=dashboardHTML();
     else if(state.activeTab==='analytics') c.innerHTML=analyticsHTML();
+    else if(state.activeTab==='combined') c.innerHTML=combinedHTML();
     else if(state.activeTab==='goals') c.innerHTML=goalsHTML();
     else if(state.activeTab==='entries') c.innerHTML=entriesHTML();
     else if(state.activeTab==='networth') c.innerHTML=netWorthHTML();
@@ -907,35 +911,37 @@
       <div class="card" style="margin-top:16px;"><h3>Notes</h3>${notes.length?'<ul class="notes">'+notes.join('')+'</ul>':'<div class="empty">Nothing unusual this month.</div>'}</div>
       <div class="card"><h3>Irregular activity this month</h3>
         ${irregularRows.length? `<table><thead><tr><th>Date</th><th>Person</th><th>What</th><th>Reason</th><th class="amt">Amount</th></tr></thead><tbody>
-          ${irregularRows.map(r=>`<tr class="irregular"><td>${esc(r.date)}</td><td>${esc(r.person)}</td><td>${esc(r.label)}</td><td>${esc(r.reason||'—')}</td><td class="amt">${fmtINR(r.amount)}</td></tr>`).join('')}
+          ${irregularRows.map(r=>`<tr class="irregular"><td>${esc(fmtDate(r.date))}</td><td>${esc(r.person)}</td><td>${esc(r.label)}</td><td>${esc(r.reason||'—')}</td><td class="amt">${fmtINR(r.amount)}</td></tr>`).join('')}
         </tbody></table>` : '<div class="empty">No irregular activity this month.</div>'}
       </div>
     `;
   }
 
   // ---------------- ANALYTICS ----------------
-  function rangeBounds(){
-    const mode=state.analyticsRange.mode;
+  function rangeBounds(rangeObj){
+    const r=rangeObj||state.analyticsRange;
+    const mode=r.mode;
     const ref=state.currentMonth;
     if(mode==='month') return {start:ref,end:ref};
     if(mode==='quarter') return quarterBounds(ref);
     if(mode==='half') return halfBounds(ref);
     if(mode==='fy') return fyBounds(ref);
-    return {start:state.analyticsRange.start||ref, end:state.analyticsRange.end||ref};
+    return {start:r.start||ref, end:r.end||ref};
   }
-  function rangeSummary(start,end){
+  function rangeSummary(start,end,peopleList){
+    const people=peopleList||state.people;
     const months=monthsBetween(start,end);
     const items=planItems();
     let incomeTotal=0, plannedTotal=0, actualTotal=0;
     let itemPlanned={}, itemActual={}; items.forEach(i=>{itemPlanned[i.key]=0;itemActual[i.key]=0;});
-    let personActual={}; state.people.forEach(p=>personActual[p]=0);
+    let personActual={}; people.forEach(p=>personActual[p]=0);
     let trend=[], irregularTrend=[];
     months.forEach(m=>{
       const inc=monthIncomeByPerson(m);
-      const incSum=Object.values(inc).reduce((a,b)=>a+b,0);
+      const incSum=people.reduce((s,p)=>s+(inc[p]||0),0);
       incomeTotal+=incSum;
       let mPlanned=0,mActual=0;
-      state.people.forEach(p=>{
+      people.forEach(p=>{
         const pInc=inc[p]||0;
         items.forEach(item=>{
           const {planned,actual}=planItemPlannedActual(item,p,m,pInc);
@@ -946,16 +952,16 @@
       });
       plannedTotal+=mPlanned; actualTotal+=mActual;
       trend.push({label:monthLabel(m),actual:mActual,planned:mPlanned});
-      const irrExp=state.expenses.filter(e=>e.irregular && e.date.slice(0,7)===m).reduce((s,e)=>s+Number(e.amount),0);
-      const irrGoal=state.goalTx.filter(t=>t.type==='withdrawal' && t.date.slice(0,7)===m).reduce((s,t)=>s+Number(t.amount),0);
+      const irrExp=state.expenses.filter(e=>e.irregular && e.date.slice(0,7)===m && people.includes(e.person)).reduce((s,e)=>s+Number(e.amount),0);
+      const irrGoal=state.goalTx.filter(t=>t.type==='withdrawal' && t.date.slice(0,7)===m && people.includes(t.person)).reduce((s,t)=>s+Number(t.amount),0);
       irregularTrend.push({label:monthLabel(m), value:irrExp+irrGoal});
     });
     let irregular=[]; let irregularByLabel={};
-    state.expenses.filter(e=>e.irregular && months.includes(e.date.slice(0,7))).forEach(e=>{
+    state.expenses.filter(e=>e.irregular && months.includes(e.date.slice(0,7)) && people.includes(e.person)).forEach(e=>{
       irregular.push({date:e.date,person:e.person,label:e.category+' — '+(e.description||''),amount:e.amount,reason:e.reason});
       irregularByLabel[e.category]=(irregularByLabel[e.category]||0)+Number(e.amount);
     });
-    state.goalTx.filter(t=>t.type==='withdrawal' && months.includes(t.date.slice(0,7))).forEach(t=>{
+    state.goalTx.filter(t=>t.type==='withdrawal' && months.includes(t.date.slice(0,7)) && people.includes(t.person)).forEach(t=>{
       const g=state.goals.find(x=>x.id===t.goalId); const lbl='Goal withdrawal — '+(g?g.name:'?');
       irregular.push({date:t.date,person:t.person,label:lbl,amount:t.amount,reason:t.reason});
       irregularByLabel[lbl]=(irregularByLabel[lbl]||0)+Number(t.amount);
@@ -1049,7 +1055,7 @@
           <div><h4>Breakdown</h4>${irregularPie.length? pieChart(irregularPie,150)+`<div class="legend">${irregularPie.map(d=>`<span><i style="background:${d.color}"></i>${esc(d.label)} · ${fmtINR(d.value)}</span>`).join('')}</div>` : '<div class="empty">No irregular activity in this range.</div>'}</div>
         </div>
         ${s.irregular.length? `<table style="margin-top:12px;"><thead><tr><th>Date</th><th>Person</th><th>What</th><th>Reason</th><th class="amt">Amount</th></tr></thead><tbody>
-          ${s.irregular.map(r=>`<tr class="irregular"><td>${esc(r.date)}</td><td>${esc(r.person)}</td><td>${esc(r.label)}</td><td>${esc(r.reason||'—')}</td><td class="amt">${fmtINR(r.amount)}</td></tr>`).join('')}
+          ${s.irregular.map(r=>`<tr class="irregular"><td>${esc(fmtDate(r.date))}</td><td>${esc(r.person)}</td><td>${esc(r.label)}</td><td>${esc(r.reason||'—')}</td><td class="amt">${fmtINR(r.amount)}</td></tr>`).join('')}
         </tbody></table>` : ''}
       </div>
 
@@ -1069,6 +1075,91 @@
       </div>
 
       ${fyReport}
+    `;
+  }
+
+  // ---------------- COMBINED ----------------
+  function combinedHTML(){
+    state.combinedFilter = state.combinedFilter || {};
+    const cf = state.combinedFilter;
+    if(cf.people==null) cf.people = state.people.slice(); // only default on first-ever load, never override a deliberate empty selection
+    cf.range = cf.range || {mode:'month'};
+    const includedPeople = state.people.filter(p=>cf.people.includes(p));
+    const mode = cf.range.mode;
+    const {start,end} = rangeBounds(cf.range);
+    const s = rangeSummary(start,end,includedPeople.length?includedPeople:state.people);
+    const itemLabels=s.items.map(i=>i.label);
+    const pieData=s.items.map((it,i)=>({label:it.label,value:s.itemActual[it.key]||0,color:CHART_COLORS[i%CHART_COLORS.length]}));
+    const personPie=includedPeople.map((p,i)=>({label:p,value:s.personActual[p]||0,color:CHART_COLORS[i%CHART_COLORS.length]}));
+
+    let rows='';
+    s.items.forEach(item=>{
+      const planned=s.itemPlanned[item.key]||0, actual=s.itemActual[item.key]||0;
+      const variance=actual-planned;
+      const varPct=planned>0?(variance/planned*100):(actual>0?100:0);
+      const over=actual>planned;
+      const maxBar=Math.max(planned,actual,1);
+      rows+=`
+        <div class="cat-row ${item.kind==='goal'?'goal-plan':''}">
+          <div class="cat-top">
+            <div class="cat-name">${esc(item.label)}${item.kind==='goal'?' <span class="pill blue">goal</span>':''}</div>
+            <div class="cat-amts">planned <b>${fmtINR(planned)}</b> &nbsp;·&nbsp; actual <b>${fmtINR(actual)}</b></div>
+          </div>
+          <div class="bar-track">
+            <div class="bar-planned" style="width:${Math.min(100,planned/maxBar*100)}%"></div>
+            <div class="bar-actual ${over?'over':''}" style="width:${Math.min(100,actual/maxBar*100)}%"></div>
+          </div>
+          <div class="cat-variance ${over?'bad':(actual>0?'good':'')}">${planned>0||actual>0?(over?'+':'')+fmtINR(variance)+' ('+(varPct>=0?'+':'')+varPct.toFixed(0)+'%)':'—'}</div>
+        </div>`;
+    });
+
+    return `
+      ${mode!=='custom'? `<div class="month-nav"><button data-shift="-1">&lsaquo;</button><div class="month-label">${monthLabel(state.currentMonth)}</div><button data-shift="1">&rsaquo;</button></div>`:''}
+      <div class="card">
+        <h4>Who to include</h4>
+        <div class="tag-list">${state.people.map(p=>`<label style="display:inline-flex;align-items:center;gap:4px;margin-right:14px;"><input type="checkbox" data-combined-person="${esc(p)}" ${cf.people.includes(p)?'checked':''}> ${esc(p)}</label>`).join('')}</div>
+      </div>
+      <div class="filter-bar">
+        <div><label>View</label>
+          <select id="combined-range-mode">
+            <option value="month" ${mode==='month'?'selected':''}>Month</option>
+            <option value="quarter" ${mode==='quarter'?'selected':''}>FY Quarter</option>
+            <option value="half" ${mode==='half'?'selected':''}>Half year</option>
+            <option value="fy" ${mode==='fy'?'selected':''}>Financial year (Apr–Mar)</option>
+            <option value="custom" ${mode==='custom'?'selected':''}>Custom range</option>
+          </select>
+        </div>
+        ${mode==='custom'? `
+          <div><label>From</label><input type="month" id="combined-range-start" value="${cf.range.start||start}"></div>
+          <div><label>To</label><input type="month" id="combined-range-end" value="${cf.range.end||end}"></div>
+        ` : `<div style="align-self:center;font-family:var(--mono);font-size:13px;color:var(--ink-soft);padding-bottom:8px;">${monthLabel(start)} – ${monthLabel(end)}</div>`}
+      </div>
+      ${!includedPeople.length? '<div class="banner">Select at least one person above to see combined figures.</div>' : `
+      <div class="summary-row">
+        <div class="stat"><div class="label">Combined income</div><div class="value">${fmtINR(s.incomeTotal)}</div></div>
+        <div class="stat"><div class="label">Combined planned</div><div class="value">${fmtINR(s.plannedTotal)}</div></div>
+        <div class="stat"><div class="label">Combined actual</div><div class="value">${fmtINR(s.actualTotal)}</div></div>
+        <div class="stat"><div class="label">Variance</div><div class="value ${s.actualTotal>s.plannedTotal?'bad':'good'}">${s.actualTotal>s.plannedTotal?'+':''}${fmtINR(s.actualTotal-s.plannedTotal)}</div></div>
+      </div>
+
+      <div class="card"><h3>Combined category &amp; goal breakdown</h3>${rows}</div>
+
+      <div class="chart-row">
+        <div class="card"><h4>Spend by category &amp; goal</h4>${pieChart(pieData)}
+          <div class="legend">${pieData.map(d=>`<span><i style="background:${d.color}"></i>${esc(d.label)} · ${fmtINR(d.value)}</span>`).join('')}</div>
+        </div>
+        <div class="card"><h4>Spend by person</h4>${personPie.length? pieChart(personPie)+`<div class="legend">${personPie.map(d=>`<span><i style="background:${d.color}"></i>${esc(d.label)} · ${fmtINR(d.value)}</span>`).join('')}</div>` : '<div class="empty">Select people to compare.</div>'}
+        </div>
+      </div>
+
+      <div class="card"><h4>Monthly trend (combined actual spend)</h4>${s.trend.length>1? lineChart(s.trend.map(t=>({label:t.label,value:t.actual})),520,150,'#3167ad') : '<div class="empty">Select a range spanning more than one month to see a trend.</div>'}</div>
+
+      <div class="card"><h3>Combined irregular spend</h3>
+        ${s.irregular.length? `<table><thead><tr><th>Date</th><th>Person</th><th>What</th><th>Reason</th><th class="amt">Amount</th></tr></thead><tbody>
+          ${s.irregular.map(r=>`<tr class="irregular"><td>${esc(fmtDate(r.date))}</td><td>${esc(r.person)}</td><td>${esc(r.label)}</td><td>${esc(r.reason||'—')}</td><td class="amt">${fmtINR(r.amount)}</td></tr>`).join('')}
+        </tbody></table>` : '<div class="empty">No irregular activity in this range for the selected people.</div>'}
+      </div>
+      `}
     `;
   }
 
@@ -1159,7 +1250,7 @@
               }
               const asset=t.toAssetId?state.assets.find(a=>a.id===t.toAssetId):null;
               const acctNote=(t.fromAccount&&t.toAccount)? ' <span style="font-size:10px;color:var(--ink-soft);">('+esc(t.fromAccount)+' → '+esc(t.toAccount)+')</span>' : '';
-              return `<tr class="${t.type==='withdrawal'?'irregular':(t.type==='transfer'?'transfer-row':'')}"><td>${esc(t.date)}</td><td>${esc(t.person)}</td><td>${t.type}${asset?' → '+esc(asset.name):''}${acctNote}</td><td>${esc(t.reason||'—')}</td><td class="amt">${t.type!=='contribution'?'-':''}${fmtINR(t.amount)}</td>
+              return `<tr class="${t.type==='withdrawal'?'irregular':(t.type==='transfer'?'transfer-row':'')}"><td>${esc(fmtDate(t.date))}</td><td>${esc(t.person)}</td><td>${t.type}${asset?' → '+esc(asset.name):''}${acctNote}</td><td>${esc(t.reason||'—')}</td><td class="amt">${t.type!=='contribution'?'-':''}${fmtINR(t.amount)}</td>
                 <td class="row-actions"><button data-edit-goaltx="${t.id}" ${canEdit(t.person)?'':'disabled'}>Edit</button><button data-del-goaltx="${t.id}" data-goaltx-transferid="${t.transferId||''}" ${canEdit(t.person)?'':'disabled'}>Delete</button></td></tr>`;
             }).join('')}
           </tbody></table>` : '<div class="empty">No activity logged for this goal yet.</div>'}
@@ -1204,12 +1295,16 @@
     const peopleOpts=state.people.map(p=>`<option value="${esc(p)}" ${p===session.loggedInAs?'selected':''}>${esc(p)}</option>`).join('');
     const catOpts=state.categories.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
     const acctOpts=state.accounts.map(a=>`<option value="${esc(a.name)}">${esc(a.name)}</option>`).join('');
-    const linkOptsFor=mode=>{
-      const assetLabel = mode==='expense' ? 'Buying more of an asset' : 'Selling / withdrawing from an asset';
-      const liabLabel = mode==='expense' ? 'Paying down a liability' : 'New borrowing on a liability';
+    const linkOptsFor=()=>{
       let html='<option value="">— nothing extra —</option>';
-      if(state.assets.length) html+=`<optgroup label="${assetLabel}">`+state.assets.map(a=>`<option value="asset:${esc(a.id)}">${esc(a.name)}</option>`).join('')+'</optgroup>';
-      if(state.liabilities.length) html+=`<optgroup label="${liabLabel}">`+state.liabilities.map(l=>`<option value="liability:${esc(l.id)}">${esc(l.name)}</option>`).join('')+'</optgroup>';
+      if(state.assets.length){
+        html+='<optgroup label="Asset — Contribution (buy / add)">'+state.assets.map(a=>`<option value="asset:contribution:${esc(a.id)}">${esc(a.name)}</option>`).join('')+'</optgroup>';
+        html+='<optgroup label="Asset — Withdrawal (sell / cash out)">'+state.assets.map(a=>`<option value="asset:withdrawal:${esc(a.id)}">${esc(a.name)}</option>`).join('')+'</optgroup>';
+      }
+      if(state.liabilities.length){
+        html+='<optgroup label="Liability — Payment (pay down)">'+state.liabilities.map(l=>`<option value="liability:payment:${esc(l.id)}">${esc(l.name)}</option>`).join('')+'</optgroup>';
+        html+='<optgroup label="Liability — New borrowing (increase)">'+state.liabilities.map(l=>`<option value="liability:borrow:${esc(l.id)}">${esc(l.name)}</option>`).join('')+'</optgroup>';
+      }
       return html;
     };
 
@@ -1223,9 +1318,12 @@
           <div><label>Source</label><input type="text" name="source" placeholder="e.g. Salary, Business" required></div>
           <div><label>Account</label><select name="account">${acctOpts}</select></div>
           <div><label>Amount</label><input type="number" min="0" name="amount" required></div>
-          <div><label>Also counts toward</label><select name="link">${linkOptsFor('income')}</select></div>
+          <div><label>Also counts toward</label><select name="link">${linkOptsFor()}</select></div>
+          <div class="checkbox-row" style="align-self:center;"><input type="checkbox" id="income-allocation" name="countsTowardAllocation" checked><label style="margin:0;" for="income-allocation">Counts toward monthly allocation %</label></div>
           <div><button class="btn" type="submit">Add income</button></div>
+          <div><button type="button" class="btn secondary small" id="repeat-income-btn">↻ Repeat last entry</button></div>
         </form>
+        <div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">Uncheck "Counts toward allocation %" for a one-off receipt (e.g. a refund or reimbursement) that shouldn't be treated as extra salary to split across your categories/goals — it still credits the account and any linkage you pick above.</div>
       </div>
 
       <div class="card"><h3>Add expense</h3>
@@ -1236,10 +1334,11 @@
           <div><label>Description</label><input type="text" name="description" placeholder="e.g. Electricity bill"></div>
           <div><label>Account</label><select name="account">${acctOpts}</select></div>
           <div><label>Amount</label><input type="number" min="0" name="amount" required></div>
-          <div><label>Also counts toward</label><select name="link">${linkOptsFor('expense')}</select></div>
+          <div><label>Also counts toward</label><select name="link">${linkOptsFor()}</select></div>
           <div class="checkbox-row" style="align-self:center;"><input type="checkbox" id="expense-irregular" name="irregular"><label style="margin:0;" for="expense-irregular">Irregular / one-off</label></div>
           <div><label>Reason (if irregular)</label><input type="text" name="reason" placeholder="Required if irregular"></div>
           <div><button class="btn" type="submit">Add expense</button></div>
+          <div><button type="button" class="btn secondary small" id="repeat-expense-btn">↻ Repeat last entry</button></div>
         </form>
       </div>
 
@@ -1264,7 +1363,7 @@
         <div class="form-grid">
           <div><label>Text (description/source/reason)</label><input type="text" id="search-q" placeholder="e.g. electricity"></div>
           <div><label>Person</label><select id="search-person"><option value="">Any</option>${state.people.map(p=>`<option value="${esc(p)}">${esc(p)}</option>`).join('')}</select></div>
-          <div><label>Type</label><select id="search-type"><option value="">Any</option><option value="income">Income</option><option value="expense">Expense</option><option value="transfer">Transfer</option></select></div>
+          <div><label>Type</label><select id="search-type"><option value="">Any</option><option value="income">Income</option><option value="expense">Expense</option><option value="transfer">Transfer</option><option value="goal">Goal activity</option><option value="asset">Asset activity</option><option value="liability">Liability activity</option></select></div>
           <div><label>Category</label><select id="search-category"><option value="">Any</option>${state.categories.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('')}</select></div>
           <div><label>Account</label><select id="search-account"><option value="">Any</option>${state.accounts.map(a=>`<option value="${esc(a.name)}">${esc(a.name)}</option>`).join('')}</select></div>
           <div><label>From date</label><input type="date" id="search-from"></div>
@@ -1277,9 +1376,23 @@
       </div>
     `;
   }
+  function parseLink(link, entry){
+    if(!link) return;
+    const parts=link.split(':');
+    if(parts[0]==='asset'){ entry.linkedAssetId=parts[2]; entry.linkedAssetDirection=parts[1]; }
+    else if(parts[0]==='liability'){ entry.linkedLiabilityId=parts[2]; entry.linkedLiabilityDirection=parts[1]; }
+  }
+  function isNearDuplicate(collection, entry){
+    const d0=new Date(entry.date+'T00:00:00Z').getTime();
+    return collection.some(x=>{
+      if(x.account!==entry.account || Number(x.amount)!==Number(entry.amount) || !entry.amount) return false;
+      const d1=new Date(x.date+'T00:00:00Z').getTime();
+      return Math.abs(d1-d0)<=3*86400000;
+    });
+  }
   function linkBadge(r){
-    if(r.linkedAssetId){ const a=state.assets.find(x=>x.id===r.linkedAssetId); return a?` <span class="flag-pill blue">→ ${esc(a.name)}</span>`:''; }
-    if(r.linkedLiabilityId){ const l=state.liabilities.find(x=>x.id===r.linkedLiabilityId); return l?` <span class="flag-pill blue">→ ${esc(l.name)}</span>`:''; }
+    if(r.linkedAssetId){ const a=state.assets.find(x=>x.id===r.linkedAssetId); const dir=r.linkedAssetDirection==='withdrawal'?'withdrawal':'contribution'; return a?` <span class="flag-pill blue">→ ${esc(a.name)} (${dir})</span>`:''; }
+    if(r.linkedLiabilityId){ const l=state.liabilities.find(x=>x.id===r.linkedLiabilityId); const dir=r.linkedLiabilityDirection==='borrow'?'new borrowing':'payment'; return l?` <span class="flag-pill blue">→ ${esc(l.name)} (${dir})</span>`:''; }
     return '';
   }
   function incomeTable(rows){
@@ -1298,7 +1411,7 @@
           </tr>`;
         }
         return `<tr>
-          <td>${esc(r.date)}</td><td>${esc(r.person)}</td><td>${esc(r.source)}${linkBadge(r)}</td><td>${esc(r.account||'—')}</td>
+          <td>${esc(fmtDate(r.date))}</td><td>${esc(r.person)}</td><td>${esc(r.source)}${r.countsTowardAllocation===false?' <span class="flag-pill">not allocated</span>':''}${linkBadge(r)}</td><td>${esc(r.account||'—')}</td>
           <td class="amt">${fmtINR(r.amount)}</td>
           <td class="row-actions"><button data-edit-income="${r.id}" ${own?'':'disabled'}>Edit</button><button data-del-income="${r.id}" ${own?'':'disabled'}>Delete</button></td>
         </tr>`;
@@ -1322,7 +1435,7 @@
           </tr>`;
         }
         return `<tr class="${r.irregular?'irregular':''}">
-          <td>${esc(r.date)}</td><td>${esc(r.person)}</td><td>${esc(r.category)}${r.irregular?'<span class="flag-pill">irregular</span>':''}${linkBadge(r)}</td>
+          <td>${esc(fmtDate(r.date))}</td><td>${esc(r.person)}</td><td>${esc(r.category)}${r.irregular?'<span class="flag-pill">irregular</span>':''}${linkBadge(r)}</td>
           <td>${esc(r.description||'—')}${r.irregular&&r.reason?`<div style="font-size:11px;color:var(--ink-soft);">${esc(r.reason)}</div>`:''}</td>
           <td>${esc(r.account||'—')}</td><td class="amt">${fmtINR(r.amount)}</td>
           <td class="row-actions"><button data-edit-expense="${r.id}" ${own?'':'disabled'}>Edit</button><button data-del-expense="${r.id}" ${own?'':'disabled'}>Delete</button></td>
@@ -1332,7 +1445,7 @@
   }
   function transferTable(rows){
     return `<table><thead><tr><th>Date</th><th>Person</th><th>From</th><th>To</th><th>Note</th><th class="amt">Amount</th><th></th></tr></thead><tbody>
-      ${rows.map(r=>`<tr><td>${esc(r.date)}</td><td>${esc(r.person)}</td><td>${esc(r.fromAccount)}</td><td>${esc(r.toAccount)}</td><td>${esc(r.note||'—')}</td><td class="amt">${fmtINR(r.amount)}</td>
+      ${rows.map(r=>`<tr><td>${esc(fmtDate(r.date))}</td><td>${esc(r.person)}</td><td>${esc(r.fromAccount)}</td><td>${esc(r.toAccount)}</td><td>${esc(r.note||'—')}</td><td class="amt">${fmtINR(r.amount)}</td>
         <td class="row-actions"><button data-del-transfer="${r.id}" ${canEdit(r.person)?'':'disabled'}>Delete</button></td></tr>`).join('')}
     </tbody></table>`;
   }
@@ -1350,6 +1463,18 @@
     if(!type||type==='income') state.income.forEach(r=>results.push({kind:'income',date:r.date,person:r.person,text:r.source,category:'',account:r.account,amount:r.amount}));
     if(!type||type==='expense') state.expenses.forEach(r=>results.push({kind:'expense',date:r.date,person:r.person,text:(r.category+' '+(r.description||'')+' '+(r.reason||'')),category:r.category,account:r.account,amount:r.amount}));
     if(!type||type==='transfer') state.transfers.forEach(r=>results.push({kind:'transfer',date:r.date,person:r.person,text:(r.fromAccount+' to '+r.toAccount+' '+(r.note||'')),category:'',account:r.fromAccount,amount:r.amount}));
+    if(!type||type==='goal') state.goalTx.forEach(t=>{
+      const g=state.goals.find(x=>x.id===t.goalId);
+      results.push({kind:'goal',date:t.date,person:t.person,text:((g?g.name:'?')+' '+t.type+' '+(t.reason||'')),category:'',account:t.fromAccount||t.toAccount||'',amount:t.amount});
+    });
+    if(!type||type==='asset') state.assetTx.forEach(t=>{
+      const a=state.assets.find(x=>x.id===t.assetId);
+      results.push({kind:'asset',date:t.date,person:'—',text:((a?a.name:'?')+' '+t.kind),category:'',account:t.account||'',amount:t.amount});
+    });
+    if(!type||type==='liability') state.liabilityTx.forEach(t=>{
+      const l=state.liabilities.find(x=>x.id===t.liabilityId);
+      results.push({kind:'liability',date:t.date,person:'—',text:((l?l.name:'?')+' '+(t.kind==='payment'?'payment':'balance sync')),category:'',account:t.account||'',amount:t.amount});
+    });
     results=results.filter(r=>{
       if(q && !r.text.toLowerCase().includes(q)) return false;
       if(person && r.person!==person) return false;
@@ -1364,7 +1489,7 @@
     const area=document.getElementById('search-results');
     if(!results.length){ area.innerHTML='<div class="empty">No matching records.</div>'; return; }
     area.innerHTML=`<table><thead><tr><th>Date</th><th>Type</th><th>Person</th><th>Detail</th><th>Account</th><th class="amt">Amount</th></tr></thead><tbody>
-      ${results.map(r=>`<tr><td>${esc(r.date)}</td><td>${esc(r.kind)}</td><td>${esc(r.person)}</td><td>${esc(r.text)}</td><td>${esc(r.account||'—')}</td><td class="amt">${fmtINR(r.amount)}</td></tr>`).join('')}
+      ${results.map(r=>`<tr><td>${esc(fmtDate(r.date))}</td><td>${esc(r.kind)}</td><td>${esc(r.person)}</td><td>${esc(r.text)}</td><td>${esc(r.account||'—')}</td><td class="amt">${fmtINR(r.amount)}</td></tr>`).join('')}
     </tbody></table>`;
   }
 
@@ -1389,6 +1514,10 @@
       + fAccounts.filter(a=>acctIsLiability(a)).reduce((s,a)=>s+accountBalanceAsOf(a,queryDate),0);
     const netWorth = totalAssets - totalLiabilities;
 
+    function gotoLedgerLink(type,itemValue,label){
+      return `<button type="button" class="ledger-link" data-goto-ledger="${esc(type)}" data-goto-ledger-item="${esc(itemValue)}" style="background:none;border:none;padding:0;font:inherit;color:var(--blue);text-decoration:underline;cursor:pointer;text-align:left;">${esc(label)}</button>`;
+    }
+
     const acctRows = fAccounts.map(a=>{
       const editing=!isHistorical && state._editAcctBalId===a.name;
       const bal=accountBalanceAsOf(a,queryDate);
@@ -1406,7 +1535,7 @@
         </td></tr>`;
       }
       return `<tr>
-        <td>${esc(a.name)}<div style="font-size:11px;color:var(--ink-soft);">${esc(a.type)} · ${isLiab?'liability':'asset'} · <b>${esc(acctOwner(a))}</b>${dispAnchor.date!=='0000-01-01'?' · opening '+fmtINR(dispAnchor.balance)+' as of '+esc(dispAnchor.date):' · no opening balance set'}${acctAnchors(a).length>1?' · <span title="'+acctAnchors(a).map(h=>h.date+': '+fmtINR(h.balance)).join(', ')+'">rolled forward '+(acctAnchors(a).length-1)+'x</span>':''}</div></td>
+        <td>${gotoLedgerLink('account',a.name,a.name)}<div style="font-size:11px;color:var(--ink-soft);">${esc(a.type)} · ${isLiab?'liability':'asset'} · <b>${esc(acctOwner(a))}</b>${dispAnchor.date!=='0000-01-01'?' · opening '+fmtINR(dispAnchor.balance)+' as of '+esc(fmtDate(dispAnchor.date)):' · no opening balance set'}${acctAnchors(a).length>1?' · <span title="'+acctAnchors(a).map(h=>fmtDate(h.date)+': '+fmtINR(h.balance)).join(', ')+'">rolled forward '+(acctAnchors(a).length-1)+'x</span>':''}</div></td>
         <td class="amt" style="color:${isLiab?(bal>0?'var(--bad)':'var(--good)'):'var(--ink)'};">${fmtINR(bal)}</td>
         <td class="row-actions">${isHistorical?'':`<button data-edit-acctbal="${esc(a.name)}">Edit</button>`}</td>
       </tr>`;
@@ -1426,7 +1555,7 @@
         </td></tr>`;
       }
       return `<tr>
-        <td>${esc(a.name)}<div style="font-size:11px;color:var(--ink-soft);">${esc(a.type)} · <b>${esc(a.owner||'Joint')}</b></div></td>
+        <td>${gotoLedgerLink('asset',a.id,a.name)}<div style="font-size:11px;color:var(--ink-soft);">${esc(a.type)} · <b>${esc(a.owner||'Joint')}</b></div></td>
         <td class="amt">${fmtINR(invested)}</td>
         <td class="amt">${fmtINR(current)}</td>
         <td class="amt" style="color:${gain>=0?'var(--good)':'var(--bad)'};">${gain>=0?'+':''}${fmtINR(gain)}</td>
@@ -1434,7 +1563,7 @@
       </tr>`;
     }).join('');
     const goalRows = includeGoals ? state.goals.map(g=>`<tr>
-      <td>${esc(g.name)}<div style="font-size:11px;color:var(--ink-soft);">Goal fund · Joint</div></td>
+      <td>${gotoLedgerLink('goal',g.id,g.name)}<div style="font-size:11px;color:var(--ink-soft);">Goal fund · Joint</div></td>
       <td class="amt">${fmtINR(goalBalanceAsOf(g.id,queryDate))}</td>
       <td class="amt">${fmtINR(goalBalanceAsOf(g.id,queryDate))}</td>
       <td class="amt">—</td>
@@ -1454,7 +1583,7 @@
         </td></tr>`;
       }
       return `<tr>
-        <td>${esc(l.name)}<div style="font-size:11px;color:var(--ink-soft);">${esc(l.type)} · <b>${esc(l.owner||'Joint')}</b></div></td>
+        <td>${gotoLedgerLink('liability',l.id,l.name)}<div style="font-size:11px;color:var(--ink-soft);">${esc(l.type)} · <b>${esc(l.owner||'Joint')}</b></div></td>
         <td class="amt">${fmtINR(l.openingBalance)}</td>
         <td class="amt">${fmtINR(liabilityBalanceAsOf(l,queryDate))}</td>
         <td class="row-actions">${isHistorical?'':`<button data-edit-liability="${l.id}">Edit</button><button data-del-liability="${l.id}">Delete</button>`}</td>
@@ -1464,66 +1593,6 @@
     const assetOpts=state.assets.map(a=>`<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('');
     const liabOpts=state.liabilities.map(l=>`<option value="${esc(l.id)}">${esc(l.name)}</option>`).join('');
     const acctOpts=state.accounts.map(a=>`<option value="${esc(a.name)}">${esc(a.name)}</option>`).join('');
-
-    const assetTxTables = fAssets.map(a=>{
-      const tx=assetLedger(a.id).slice().reverse();
-      if(!tx.length) return '';
-      const deltas=assetValuationDeltas(a.id);
-      return `<h4 style="margin-top:14px;">${esc(a.name)} activity</h4>
-        <table><thead><tr><th>Date</th><th>Type</th><th class="amt">Amount</th><th></th></tr></thead><tbody>
-          ${tx.map(t=>{
-            const editing=t.source==='manual' && state._editRow===t.id;
-            if(editing){
-              return `<tr><td><input type="date" data-edit-field="date" value="${esc(t.date)}"></td>
-                <td><select data-edit-field="kind"><option value="contribution" ${t.kind==='contribution'?'selected':''}>contribution</option><option value="withdrawal" ${t.kind==='withdrawal'?'selected':''}>withdrawal</option><option value="valuation" ${t.kind==='valuation'?'selected':''}>valuation</option></select></td>
-                <td><input type="number" data-edit-field="amount" value="${t.amount}" style="text-align:right;"></td>
-                <td class="row-actions"><button data-save-assettx="${t.id}">Save</button><button data-cancel-edit="1">Cancel</button></td></tr>`;
-            }
-            let amtCell;
-            if(t.kind==='valuation'){
-              const delta=deltas[t.id]||0;
-              amtCell=`<span style="color:${delta>=0?'var(--good)':'var(--bad)'};font-weight:600;">${delta>=0?'+':''}${fmtINR(delta)}</span><div style="font-size:10px;color:var(--ink-soft);">value ${fmtINR(t.amount)}</div>`;
-            } else {
-              amtCell=(t.kind==='withdrawal'?'-':'')+fmtINR(t.amount);
-            }
-            let noteBits=[];
-            if(t.source==='expense') noteBits.push('via Expense: '+esc(t.desc)+' — edit in Entries');
-            if(t.source==='income') noteBits.push('via Income: '+esc(t.desc)+' — edit in Entries');
-            if(t.fromGoalId) noteBits.push('from goal transfer: '+esc((state.goals.find(g=>g.id===t.fromGoalId)||{}).name||'?'));
-            if(t.fromAssetId) noteBits.push('from asset transfer: '+esc((state.assets.find(x=>x.id===t.fromAssetId)||{}).name||'?'));
-            if(t.toAssetId) noteBits.push('→ '+esc((state.assets.find(x=>x.id===t.toAssetId)||{}).name||'?'));
-            const note=noteBits.length? ' <span style="font-size:10px;color:var(--ink-soft);">('+noteBits.join(', ')+')</span>':'';
-            const actions=t.source==='manual'
-              ? `<button data-edit-assettx="${t.id}">Edit</button><button data-del-assettx="${t.id}" data-assettx-transferid="${t.transferId||''}">Delete</button>`
-              : '';
-            return `<tr class="${t.transferId?'transfer-row':''}"><td>${esc(t.date)}</td><td>${t.kind}${note}</td><td class="amt">${amtCell}</td>
-              <td class="row-actions">${actions}</td></tr>`;
-          }).join('')}
-        </tbody></table>`;
-    }).join('');
-
-    const liabTxTables = fLiabilities.map(l=>{
-      const tx=liabilityLedger(l.id).slice().reverse();
-      if(!tx.length) return '';
-      return `<h4 style="margin-top:14px;">${esc(l.name)} balance history</h4>
-        <table><thead><tr><th>Date</th><th>Type</th><th class="amt">Amount</th><th></th></tr></thead><tbody>
-          ${tx.map(t=>{
-            const editing=t.source==='manual' && state._editRow===t.id;
-            const typeLabel=t.kind==='payment'?'payment':(t.kind==='borrow'?'new borrowing':'balance sync');
-            if(editing){
-              return `<tr><td><input type="date" data-edit-field="date" value="${esc(t.date)}"></td>
-                <td>${typeLabel}</td>
-                <td><input type="number" data-edit-field="amount" value="${t.amount}" style="text-align:right;"></td>
-                <td class="row-actions"><button data-save-liabtx="${t.id}">Save</button><button data-cancel-edit="1">Cancel</button></td></tr>`;
-            }
-            const note=t.source!=='manual'? ` <span style="font-size:10px;color:var(--ink-soft);">(via ${t.source==='expense'?'Expense':'Income'}: ${esc(t.desc)} — edit in Entries)</span>` : '';
-            const amtSign=t.kind==='payment'?'-':(t.kind==='borrow'?'+':'');
-            const actions=t.source==='manual' ? `<button data-edit-liabtx="${t.id}">Edit</button><button data-del-liabtx="${t.id}">Delete</button>` : '';
-            return `<tr><td>${esc(t.date)}</td><td>${typeLabel}${note}</td><td class="amt">${amtSign}${fmtINR(t.amount)}</td>
-              <td class="row-actions">${actions}</td></tr>`;
-          }).join('')}
-        </tbody></table>`;
-    }).join('');
 
     // trend + allocation chart data
     const trendMonths=monthsBetween(shiftMonth(state.currentMonth,-11), state.currentMonth);
@@ -1574,6 +1643,8 @@
           ${liabData.length? pieChart(liabData)+`<div class="legend">${liabData.map(d=>`<span><i style="background:${d.color}"></i>${esc(d.label)} · ${fmtINR(d.value)}</span>`).join('')}</div>` : '<div class="empty">No liabilities to show.</div>'}
         </div>
       </div>
+
+      <div class="banner" style="font-size:12px;">Click any account, asset, goal, or liability name below to open its full history, charts, and export options in the <b>Ledger</b> tab.</div>
 
       <div class="card">
         <h3>Accounts <span class="pill blue">live balance from your entries</span></h3>
@@ -1628,8 +1699,7 @@
         </form>
         ${!state.assets.length? '<div class="empty">Add an asset above before logging activity.</div>':''}
         </div>
-        </details>
-        ${assetTxTables}`}
+        </details>`}
       </div>
 
       <div class="card">
@@ -1662,12 +1732,12 @@
         </form>
         ${!state.liabilities.length? '<div class="empty">Add a liability above before updating it.</div>':''}
         </div>
-        </details>
-        ${liabTxTables}`}
+        </details>`}
       </div>
     `;
   }
 
+  // ---------------- LEDGER (Account / Asset / Liability / Category / Goal) ----------------
   function accountLedgerEntries(acct){
     const isLiab=acctIsLiability(acct);
     const goalName=id=>{ const g=state.goals.find(x=>x.id===id); return g?g.name:'—'; };
@@ -1691,84 +1761,213 @@
     raw.sort((a,b)=>a.date.localeCompare(b.date));
     return raw.map(r=>({date:r.date, type:r.type, desc:r.desc, person:r.person, delta: isLiab? -r.base : r.base}));
   }
+  function categoryLedgerEntries(category){
+    return state.expenses.filter(e=>e.category===category).map(e=>({date:e.date, type:e.irregular?'Expense (irregular)':'Expense', desc:(e.description||'—')+(e.reason?' — '+e.reason:''), person:e.person, amount:Number(e.amount)})).sort((a,b)=>a.date.localeCompare(b.date));
+  }
+  function goalLedgerEntries(goalId){
+    const assetName=id=>{ const a=state.assets.find(x=>x.id===id); return a?a.name:'—'; };
+    return goalTxForGoal(goalId).map(t=>{
+      let desc=t.type;
+      if(t.type==='transfer') desc='Transfer to asset: '+assetName(t.toAssetId);
+      else if(t.fromAccount && t.toAccount) desc=(t.type==='contribution'?'From ':'To ')+(t.type==='contribution'?t.fromAccount:t.toAccount);
+      if(t.reason) desc+=' — '+t.reason;
+      return {date:t.date, type:t.type, desc, person:t.person, delta: t.type==='contribution'?Number(t.amount):-Number(t.amount)};
+    }).sort((a,b)=>a.date.localeCompare(b.date));
+  }
+  function buildLedgerData(type,item,ownerFilter,fromDate,toDate){
+    if(type==='account'){
+      const acct=state.accounts.find(a=>a.name===item);
+      if(!acct) return null;
+      let entries=accountLedgerEntries(acct);
+      const firstAnchor=acctAnchors(acct)[0];
+      let startBalance=firstAnchor.balance, startDate=firstAnchor.date;
+      if(fromDate){ startBalance=accountBalanceAsOf(acct, shiftDateByDays(fromDate,-1)); startDate=fromDate; }
+      entries=entries.filter(e=>(!fromDate||e.date>=fromDate)&&(!toDate||e.date<=toDate));
+      let bal=startBalance;
+      const rows=[{date:startDate==='0000-01-01'?'—':startDate, type:'Balance forward', desc:'—', person:'—', delta:null, balance:bal}];
+      entries.forEach(e=>{ bal+=e.delta; rows.push(Object.assign({balance:bal}, e)); });
+      const trend=monthsBetween(shiftMonth(state.currentMonth,-11), state.currentMonth).map(m=>({label:monthLabel(m), value:accountBalanceAsOf(acct, m+'-31')}));
+      return {title:acct.name, columns:['Date','Type','Description','Person','Amount','Balance'], rows, hasBalance:true, trend, summary:[{label:'Current balance', value:accountBalance(acct)}]};
+    }
+    if(type==='asset'){
+      const asset=state.assets.find(a=>a.id===item);
+      if(!asset) return null;
+      let entries=assetLedger(asset.id).slice().filter(e=>(!fromDate||e.date>=fromDate)&&(!toDate||e.date<=toDate));
+      const deltas=assetValuationDeltas(asset.id);
+      const rows=entries.map(t=>{
+        let desc=t.kind;
+        if(t.source==='expense') desc+=' (via Expense: '+t.desc+' — edit in Entries)';
+        else if(t.source==='income') desc+=' (via Income: '+t.desc+' — edit in Entries)';
+        else if(t.fromGoalId){ const g=state.goals.find(x=>x.id===t.fromGoalId); desc+=' (from goal transfer: '+(g?g.name:'?')+')'; }
+        else if(t.fromAssetId){ const a2=state.assets.find(x=>x.id===t.fromAssetId); desc+=' (from asset transfer: '+(a2?a2.name:'?')+')'; }
+        else if(t.toAssetId){ const a2=state.assets.find(x=>x.id===t.toAssetId); desc+=' (→ '+(a2?a2.name:'?')+')'; }
+        let amount = t.kind==='valuation' ? (deltas[t.id]||0) : (t.kind==='withdrawal'?-Number(t.amount):Number(t.amount));
+        return {date:t.date, type:t.kind, desc, person:'—', amount, source:t.source, id:t.id, transferId:t.transferId};
+      });
+      const trendMonths=monthsBetween(shiftMonth(state.currentMonth,-11), state.currentMonth);
+      const trend=trendMonths.map(m=>({label:monthLabel(m), value:assetCurrentValueAsOf(asset.id,m+'-31')}));
+      const investedTrend=trendMonths.map(m=>({label:monthLabel(m), value:assetInvestedAsOf(asset.id,m+'-31')}));
+      return {title:asset.name, columns:['Date','Type','Description','Amount'], rows, trend, investedTrend, summary:[
+        {label:'Invested', value:assetInvested(asset.id)}, {label:'Current value', value:assetCurrentValue(asset.id)}, {label:'Gain/loss', value:assetCurrentValue(asset.id)-assetInvested(asset.id)}
+      ]};
+    }
+    if(type==='liability'){
+      const liab=state.liabilities.find(l=>l.id===item);
+      if(!liab) return null;
+      let entries=liabilityLedger(liab.id).slice().filter(e=>(!fromDate||e.date>=fromDate)&&(!toDate||e.date<=toDate));
+      const rows=entries.map(t=>{
+        const typeLabel=t.kind==='payment'?'payment':(t.kind==='borrow'?'new borrowing':'balance sync');
+        let desc=t.source!=='manual'? ('via '+(t.source==='expense'?'Expense':'Income')+': '+t.desc+' — edit in Entries') : '—';
+        const amount = t.kind==='payment'?-Number(t.amount):(t.kind==='borrow'?Number(t.amount):null);
+        return {date:t.date, type:typeLabel, desc, person:'—', amount, balance: amount==null?Number(t.amount):null, source:t.source, id:t.id};
+      });
+      const trendMonths=monthsBetween(shiftMonth(state.currentMonth,-11), state.currentMonth);
+      const trend=trendMonths.map(m=>({label:monthLabel(m), value:liabilityBalanceAsOf(liab,m+'-31')}));
+      return {title:liab.name, columns:['Date','Type','Description','Amount/Balance'], rows, trend, summary:[{label:'Current balance', value:liabilityCurrentBalance(liab)}]};
+    }
+    if(type==='category'){
+      let entries=categoryLedgerEntries(item).filter(e=>(!fromDate||e.date>=fromDate)&&(!toDate||e.date<=toDate));
+      const total=entries.reduce((s,e)=>s+e.amount,0);
+      const trendMonths=monthsBetween(shiftMonth(state.currentMonth,-11), state.currentMonth);
+      const trend=trendMonths.map(m=>({label:monthLabel(m), value: state.expenses.filter(e=>e.category===item&&e.date.slice(0,7)===m).reduce((s,e)=>s+Number(e.amount),0)}));
+      return {title:item, columns:['Date','Type','Description','Person','Amount'], rows:entries.map(e=>Object.assign({},e)), trend, summary:[{label:'Total in range', value:total}]};
+    }
+    if(type==='goal'){
+      const goal=state.goals.find(g=>g.id===item);
+      if(!goal) return null;
+      let entries=goalLedgerEntries(goal.id).filter(e=>(!fromDate||e.date>=fromDate)&&(!toDate||e.date<=toDate));
+      let bal=0;
+      const rows=entries.map(e=>{ bal+=e.delta; return Object.assign({balance:bal}, e); });
+      const trendMonths=monthsBetween(shiftMonth(state.currentMonth,-11), state.currentMonth);
+      const trend=trendMonths.map(m=>({label:monthLabel(m), value:goalBalanceAsOf(goal.id,m+'-31')}));
+      return {title:goal.name, columns:['Date','Type','Description','Person','Amount','Balance'], rows, hasBalance:true, trend, summary:[{label:'Saved so far', value:goalBalance(goal.id)}, {label:'Target', value:goal.targetAmount}]};
+    }
+    return null;
+  }
   function ledgerHTML(){
-    const acctFilter = state.ledgerFilter && state.ledgerFilter.account || 'all';
-    const ownerFilter = state.ledgerFilter && state.ledgerFilter.owner || 'all';
-    const fromDate = (state.ledgerFilter && state.ledgerFilter.from) || '';
-    const toDate = (state.ledgerFilter && state.ledgerFilter.to) || '';
+    const lf = state.ledgerFilter || {};
+    const typeFilter = lf.type || 'account';
+    const itemFilter = lf.item || 'all';
+    const ownerFilter = lf.owner || 'all';
+    const fromDate = lf.from || '';
+    const toDate = lf.to || '';
 
-    const acctOptions = ['all'].concat(state.accounts.map(a=>a.name));
+    const itemOptionsByType = {
+      account: state.accounts.map(a=>({value:a.name,label:a.name})),
+      asset: state.assets.map(a=>({value:a.id,label:a.name})),
+      liability: state.liabilities.map(l=>({value:l.id,label:l.name})),
+      category: state.categories.map(c=>({value:c,label:c})),
+      goal: state.goals.map(g=>({value:g.id,label:g.name}))
+    };
+    const itemOptions = itemOptionsByType[typeFilter] || [];
 
     let body='';
-    if(!state.accounts.length){
-      body='<div class="empty">No accounts yet — add one in Setup → Payment modes / accounts.</div>';
-    } else if(acctFilter==='all'){
+    let data=null;
+    if(typeFilter==='account' && itemFilter==='all'){
       const visibleAccounts = state.accounts.filter(a=>ownerMatches(a.owner, ownerFilter));
       let combined=[];
-      visibleAccounts.forEach(a=>{
-        accountLedgerEntries(a).forEach(e=>combined.push(Object.assign({account:a.name}, e)));
-      });
+      visibleAccounts.forEach(a=>{ accountLedgerEntries(a).forEach(e=>combined.push(Object.assign({account:a.name}, e))); });
       combined = combined.filter(e=> (!fromDate||e.date>=fromDate) && (!toDate||e.date<=toDate) );
       combined.sort((a,b)=>b.date.localeCompare(a.date));
       body = combined.length? `<table><thead><tr><th>Date</th><th>Account</th><th>Type</th><th>Description</th><th>Person</th><th class="amt">Amount</th></tr></thead><tbody>
-        ${combined.map(e=>`<tr><td>${esc(e.date)}</td><td>${esc(e.account)}</td><td>${esc(e.type)}</td><td>${esc(e.desc)}</td><td>${esc(e.person)}</td><td class="amt" style="color:${e.delta>=0?'var(--good)':'var(--bad)'};">${e.delta>=0?'+':''}${fmtINR(e.delta)}</td></tr>`).join('')}
+        ${combined.map(e=>`<tr><td>${esc(fmtDate(e.date))}</td><td>${esc(e.account)}</td><td>${esc(e.type)}</td><td>${esc(e.desc)}</td><td>${esc(e.person)}</td><td class="amt" style="color:${e.delta>=0?'var(--good)':'var(--bad)'};">${e.delta>=0?'+':''}${fmtINR(e.delta)}</td></tr>`).join('')}
       </tbody></table>` : '<div class="empty">No entries match these filters.</div>';
+    } else if(!itemOptions.length){
+      body=`<div class="empty">No ${esc(typeFilter)}s yet.</div>`;
     } else {
-      const acct = state.accounts.find(a=>a.name===acctFilter);
-      if(!acct){ body='<div class="empty">Account not found.</div>'; }
+      const activeItem = itemFilter==='all' ? itemOptions[0].value : itemFilter;
+      data = buildLedgerData(typeFilter, activeItem, ownerFilter, fromDate, toDate);
+      if(!data){ body='<div class="empty">Not found.</div>'; }
       else {
-        let entries = accountLedgerEntries(acct);
-        const firstAnchor = acctAnchors(acct)[0];
-        let startBalance = firstAnchor.balance;
-        let startDate = firstAnchor.date;
-        if(fromDate){
-          const dayBefore = shiftDateByDays(fromDate, -1);
-          startBalance = accountBalanceAsOf(acct, dayBefore);
-          startDate = fromDate;
-        }
-        entries = entries.filter(e=> (!fromDate||e.date>=fromDate) && (!toDate||e.date<=toDate) );
-        let bal=startBalance;
-        const rows=[{date: startDate==='0000-01-01'?'—':startDate, type:'Balance forward', desc:'—', person:'—', delta:null, balance:bal}];
-        entries.forEach(e=>{ bal+=e.delta; rows.push(Object.assign({balance:bal}, e)); });
-        body = `<table><thead><tr><th>Date</th><th>Type</th><th>Description</th><th>Person</th><th class="amt">Amount</th><th class="amt">Balance</th></tr></thead><tbody>
-          ${rows.map(r=>`<tr>${r.type==='Balance forward'?'<td colspan="4" style="font-style:italic;color:var(--ink-soft);">Balance forward</td>':`<td>${esc(r.date)}</td><td>${esc(r.type)}</td><td>${esc(r.desc)}</td><td>${esc(r.person)}</td>`}<td class="amt" style="color:${r.delta==null?'inherit':(r.delta>=0?'var(--good)':'var(--bad)')};">${r.delta==null?'—':(r.delta>=0?'+':'')+fmtINR(r.delta)}</td><td class="amt"><b>${fmtINR(r.balance)}</b></td></tr>`).join('')}
-        </tbody></table>`;
+        body = `<div class="summary-row" style="grid-template-columns:repeat(${data.summary.length},1fr);">
+          ${data.summary.map(s=>`<div class="stat"><div class="label">${esc(s.label)}</div><div class="value">${fmtINR(s.value)}</div></div>`).join('')}
+        </div>
+        ${data.trend && data.trend.length>1 ? `<div class="card no-print"><h4>Trend (last 12 months)</h4>${data.investedTrend? lineChartMulti([{label:'Invested',color:'#4b5b66',points:data.investedTrend.map(p=>({label:p.label,value:p.value}))},{label:'Current value',color:'#1f8f5f',points:data.trend.map(p=>({label:p.label,value:p.value}))}]) : lineChart(data.trend,720,140,'#3167ad')}${data.investedTrend?'<div class="legend"><span><i style="background:#4b5b66"></i>Invested</span><span><i style="background:#1f8f5f"></i>Current value</span></div>':''}</div>` : ''}
+        <table><thead><tr>${data.columns.map(c=>`<th${c.toLowerCase().includes('amount')||c.toLowerCase().includes('balance')?' class="amt"':''}>${esc(c)}</th>`).join('')}</tr></thead><tbody>
+          ${data.rows.slice().reverse().map(r=>{
+            if(r.type==='Balance forward') return `<tr><td colspan="${data.columns.length-1}" style="font-style:italic;color:var(--ink-soft);">Balance forward</td><td class="amt"><b>${fmtINR(r.balance)}</b></td></tr>`;
+            const cells=[esc(fmtDate(r.date)), esc(r.type), esc(r.desc||'—')];
+            if(data.columns.includes('Person')) cells.push(esc(r.person||'—'));
+            let amtHtml;
+            if(r.amount!=null){ amtHtml=`<td class="amt" style="color:${r.amount>=0?'var(--good)':'var(--bad)'};">${r.amount>=0&&data.hasBalance?'+':''}${fmtINR(r.amount)}</td>`; }
+            else if(r.delta!=null){ amtHtml=`<td class="amt" style="color:${r.delta>=0?'var(--good)':'var(--bad)'};">${r.delta>=0?'+':''}${fmtINR(r.delta)}</td>`; }
+            else { amtHtml='<td class="amt">—</td>'; }
+            let html=`<tr>${cells.map(c=>`<td>${c}</td>`).join('')}${amtHtml}`;
+            if(data.hasBalance && r.balance!=null) html+=`<td class="amt"><b>${fmtINR(r.balance)}</b></td>`;
+            html+='</tr>';
+            return html;
+          }).join('')}
+        </tbody></table>
+        ${!data.rows.length?'<div class="empty">No activity yet.</div>':''}`;
       }
     }
 
+    const typeLabels={account:'Account',asset:'Asset',liability:'Liability',category:'Category',goal:'Goal'};
     return `
-      <div class="filter-bar">
-        <div><label>Account</label>
-          <select id="ledger-account-filter">
-            ${acctOptions.map(a=>`<option value="${esc(a)}" ${acctFilter===a?'selected':''}>${a==='all'?'All accounts':esc(a)}</option>`).join('')}
+      <div class="filter-bar no-print">
+        <div><label>Type</label>
+          <select id="ledger-type-filter">
+            ${Object.keys(typeLabels).map(t=>`<option value="${t}" ${typeFilter===t?'selected':''}>${typeLabels[t]}</option>`).join('')}
           </select>
         </div>
-        <div><label>Owner</label>
+        <div><label>Which one</label>
+          <select id="ledger-item-filter">
+            ${typeFilter==='account'?`<option value="all" ${itemFilter==='all'?'selected':''}>All accounts</option>`:''}
+            ${itemOptions.map(o=>`<option value="${esc(o.value)}" ${itemFilter===o.value?'selected':''}>${esc(o.label)}</option>`).join('')}
+          </select>
+        </div>
+        ${typeFilter==='account'&&itemFilter==='all'? `<div><label>Owner</label>
           <select id="ledger-owner-filter">
             <option value="all" ${ownerFilter==='all'?'selected':''}>All</option>
             ${OWNER_OPTIONS().map(p=>`<option value="${esc(p)}" ${ownerFilter===p?'selected':''}>${esc(p)}</option>`).join('')}
           </select>
-        </div>
+        </div>` : ''}
         <div><label>From</label><input type="date" id="ledger-from-filter" value="${fromDate}"></div>
         <div><label>To</label><input type="date" id="ledger-to-filter" value="${toDate}"></div>
       </div>
       <div class="card">
-        <h3>Account ledger ${acctFilter!=='all'?'— '+esc(acctFilter):''}</h3>
+        <div class="flex-between">
+          <h3>${typeLabels[typeFilter]} ledger${data?' — '+esc(data.title):''}</h3>
+          ${data? `<div class="no-print"><button class="btn secondary small" id="ledger-export-excel">Download (.xlsx)</button> <button class="btn secondary small" id="ledger-export-pdf">Print / Save as PDF</button></div>` : ''}
+        </div>
         ${body}
       </div>
     `;
   }
+  function ledgerExportRows(){
+    const lf = state.ledgerFilter || {};
+    const typeFilter = lf.type || 'account';
+    const itemFilter = lf.item || 'all';
+    const data = buildLedgerData(typeFilter, itemFilter, lf.owner||'all', lf.from||'', lf.to||'');
+    if(!data) return null;
+    const rows = data.rows.map(r=>{
+      const row={};
+      data.columns.forEach(c=>{
+        if(c==='Date') row.Date=fmtDate(r.date);
+        else if(c==='Type') row.Type=r.type;
+        else if(c==='Description') row.Description=r.desc||'—';
+        else if(c==='Person') row.Person=r.person||'—';
+        else if(c.includes('Amount')) row[c]= r.amount!=null? r.amount : (r.delta!=null? r.delta : (r.balance!=null? r.balance : ''));
+        else if(c==='Balance') row.Balance = r.balance!=null? r.balance : '';
+      });
+      return row;
+    });
+    return {title:data.title, rows};
+  }
+
 
   // ---------------- SETUP ----------------
   function setupHTML(){
     const versions=state.allocationVersions.slice().sort((a,b)=>b.effectiveMonth.localeCompare(a.effectiveMonth));
     const editingMonth=state._editingAllocMonth || state.currentMonth;
     const existing=state.allocationVersions.find(v=>v.effectiveMonth===editingMonth);
+    // when there's no exact saved version for this month, pre-fill with whatever version is currently applicable (the most recent one before/on this month) — this is exactly the lookup allocationForMonth already does
+    const prefillSource = existing || allocationForMonth(editingMonth);
     const items=planItems();
     let pctRows='';
     items.forEach(item=>{
       let cells=state.people.map(p=>{
-        const val=existing && existing.pct[p] && existing.pct[p][item.key]!=null ? existing.pct[p][item.key] : '';
+        const val=prefillSource && prefillSource.pct[p] && prefillSource.pct[p][item.key]!=null ? prefillSource.pct[p][item.key] : '';
         return `<input type="number" step="0.01" min="0" max="100" data-pct-person="${esc(p)}" data-pct-key="${esc(item.key)}" value="${val}" style="text-align:right;">`;
       }).join('');
       pctRows+=`<div class="pct-input-row"><div>${esc(item.label)}${item.kind==='goal'?' <span class="pill blue">goal</span>':''}</div>${cells}</div>`;
@@ -1799,9 +1998,12 @@
 
       <div class="card">
         <h3>Allocation plan <span class="pill">versioned by month</span> <span class="pill blue">categories + goals combined</span></h3>
-        <div class="form-grid" style="margin-bottom:14px;grid-template-columns:200px 1fr;">
+        <div class="form-grid" style="margin-bottom:14px;grid-template-columns:200px 1fr 1fr;">
           <div><label>Effective from month</label><input type="month" id="alloc-month" value="${editingMonth}"></div>
+          <div><label>Copy % from version</label><select id="copy-alloc-version"><option value="">— choose a version —</option>${versions.map(v=>`<option value="${esc(v.effectiveMonth)}">${esc(monthLabel(v.effectiveMonth))}</option>`).join('')}</select></div>
+          <div><button type="button" class="btn secondary" id="copy-alloc-btn">Copy into form</button></div>
         </div>
+        <div style="font-size:11px;color:var(--ink-soft);margin-bottom:10px;">${existing? 'Editing the saved version for this month.' : (prefillSource? 'No version saved for this month yet — pre-filled below from '+esc(monthLabel(prefillSource.effectiveMonth))+'. Adjust and save, or leave as-is if nothing changed.' : 'No prior version to pre-fill from — enter percentages below.')}</div>
         <div class="pct-input-row" style="font-weight:600;">
           <div style="font-size:11px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.06em;">Category / Goal</div>${peopleHeaders}
         </div>
@@ -1849,12 +2051,22 @@
         e.preventDefault();
         const f=new FormData(incForm);
         if(!canEdit(f.get('person'))){ alert("You can only add entries under your own name."); return; }
-        const entry={id:nextId(), date:f.get('date'), person:f.get('person'), source:f.get('source'), account:f.get('account'), amount:Number(f.get('amount'))};
-        const link=f.get('link');
-        if(link&&link.startsWith('asset:')) entry.linkedAssetId=link.slice(6);
-        else if(link&&link.startsWith('liability:')) entry.linkedLiabilityId=link.slice(10);
+        const entry={id:nextId(), date:f.get('date'), person:f.get('person'), source:f.get('source'), account:f.get('account'), amount:Number(f.get('amount')), countsTowardAllocation: !!f.get('countsTowardAllocation')};
+        parseLink(f.get('link'), entry);
+        if(isNearDuplicate(state.income, entry)){
+          if(!confirm('This looks similar to an income entry already logged for the same account and amount within a few days — add it anyway?')) return;
+        }
         state.income.push(entry);
         await saveState(); renderTabContent();
+      });
+      const repeatIncBtn=document.getElementById('repeat-income-btn');
+      if(repeatIncBtn) repeatIncBtn.addEventListener('click', ()=>{
+        const mine=state.income.filter(x=>x.person===session.loggedInAs).sort((a,b)=>b.date.localeCompare(a.date));
+        if(!mine.length){ alert('No previous income entry to repeat.'); return; }
+        const last=mine[0];
+        incForm.querySelector('[name="source"]').value=last.source;
+        incForm.querySelector('[name="account"]').value=last.account;
+        incForm.querySelector('[name="amount"]').value=last.amount;
       });
       const expForm=document.getElementById('expense-form');
       if(expForm) expForm.addEventListener('submit', async(e)=>{
@@ -1865,11 +2077,22 @@
         const reason=f.get('reason');
         if(irregular && !reason){ alert('Please add a reason for this irregular expense.'); return; }
         const entry={id:nextId(), date:f.get('date'), person:f.get('person'), category:f.get('category'), description:f.get('description'), account:f.get('account'), amount:Number(f.get('amount')), irregular, reason};
-        const link=f.get('link');
-        if(link&&link.startsWith('asset:')) entry.linkedAssetId=link.slice(6);
-        else if(link&&link.startsWith('liability:')) entry.linkedLiabilityId=link.slice(10);
+        parseLink(f.get('link'), entry);
+        if(isNearDuplicate(state.expenses, entry)){
+          if(!confirm('This looks similar to an expense already logged for the same account and amount within a few days — add it anyway?')) return;
+        }
         state.expenses.push(entry);
         await saveState(); renderTabContent();
+      });
+      const repeatExpBtn=document.getElementById('repeat-expense-btn');
+      if(repeatExpBtn) repeatExpBtn.addEventListener('click', ()=>{
+        const mine=state.expenses.filter(x=>x.person===session.loggedInAs).sort((a,b)=>b.date.localeCompare(a.date));
+        if(!mine.length){ alert('No previous expense entry to repeat.'); return; }
+        const last=mine[0];
+        expForm.querySelector('[name="category"]').value=last.category;
+        expForm.querySelector('[name="description"]').value=last.description||'';
+        expForm.querySelector('[name="account"]').value=last.account;
+        expForm.querySelector('[name="amount"]').value=last.amount;
       });
       const trnForm=document.getElementById('transfer-form');
       if(trnForm) trnForm.addEventListener('submit', async(e)=>{
@@ -2017,6 +2240,21 @@
       if(printBtn) printBtn.addEventListener('click', ()=>window.print());
     }
 
+    if(state.activeTab==='combined'){
+      state.combinedFilter = state.combinedFilter || {people:state.people.slice(), range:{mode:'month'}};
+      document.querySelectorAll('[data-combined-person]').forEach(cb=>cb.addEventListener('change', ()=>{
+        const p=cb.dataset.combinedPerson;
+        if(cb.checked){ if(!state.combinedFilter.people.includes(p)) state.combinedFilter.people.push(p); }
+        else { state.combinedFilter.people=state.combinedFilter.people.filter(x=>x!==p); }
+        saveState(); renderTabContent();
+      }));
+      const cModeSel=document.getElementById('combined-range-mode');
+      if(cModeSel) cModeSel.addEventListener('change', ()=>{ state.combinedFilter.range.mode=cModeSel.value; saveState(); renderTabContent(); });
+      const cStart=document.getElementById('combined-range-start'), cEnd=document.getElementById('combined-range-end');
+      if(cStart) cStart.addEventListener('change', ()=>{ state.combinedFilter.range.start=cStart.value; saveState(); renderTabContent(); });
+      if(cEnd) cEnd.addEventListener('change', ()=>{ state.combinedFilter.range.end=cEnd.value; saveState(); renderTabContent(); });
+    }
+
     if(state.activeTab==='networth'){
       const filterSel=document.getElementById('networth-owner-filter');
       if(filterSel) filterSel.addEventListener('change', ()=>{ state.netWorthFilter=filterSel.value; saveState(); renderTabContent(); });
@@ -2157,16 +2395,36 @@
     }
 
     if(state.activeTab==='ledger'){
-      state.ledgerFilter = state.ledgerFilter || {};
-      const acctSel=document.getElementById('ledger-account-filter');
+      state.ledgerFilter = state.ledgerFilter || {type:'account', item:'all'};
+      const typeSel=document.getElementById('ledger-type-filter');
+      const itemSel=document.getElementById('ledger-item-filter');
       const ownerSel=document.getElementById('ledger-owner-filter');
       const fromInp=document.getElementById('ledger-from-filter');
       const toInp=document.getElementById('ledger-to-filter');
-      if(acctSel) acctSel.addEventListener('change', ()=>{ state.ledgerFilter.account=acctSel.value; saveState(); renderTabContent(); });
+      if(typeSel) typeSel.addEventListener('change', ()=>{ state.ledgerFilter.type=typeSel.value; state.ledgerFilter.item='all'; saveState(); renderTabContent(); });
+      if(itemSel) itemSel.addEventListener('change', ()=>{ state.ledgerFilter.item=itemSel.value; saveState(); renderTabContent(); });
       if(ownerSel) ownerSel.addEventListener('change', ()=>{ state.ledgerFilter.owner=ownerSel.value; saveState(); renderTabContent(); });
       if(fromInp) fromInp.addEventListener('change', ()=>{ state.ledgerFilter.from=fromInp.value; saveState(); renderTabContent(); });
       if(toInp) toInp.addEventListener('change', ()=>{ state.ledgerFilter.to=toInp.value; saveState(); renderTabContent(); });
+      const exportExcelBtn=document.getElementById('ledger-export-excel');
+      if(exportExcelBtn) exportExcelBtn.addEventListener('click', ()=>{
+        if(typeof XLSX==='undefined'){ alert('Export library not loaded — check your internet connection and try again.'); return; }
+        const data=ledgerExportRows();
+        if(!data || !data.rows.length){ alert('Nothing to export yet.'); return; }
+        const wb=XLSX.utils.book_new();
+        const ws=XLSX.utils.json_to_sheet(data.rows);
+        XLSX.utils.book_append_sheet(wb, ws, data.title.slice(0,31));
+        XLSX.writeFile(wb, 'ledger-'+data.title.replace(/[^a-z0-9]+/gi,'-')+'-'+todayDate()+'.xlsx');
+      });
+      const exportPdfBtn=document.getElementById('ledger-export-pdf');
+      if(exportPdfBtn) exportPdfBtn.addEventListener('click', ()=>window.print());
     }
+    document.querySelectorAll('[data-goto-ledger]').forEach(b=>b.addEventListener('click', ()=>{
+      const type=b.dataset.gotoLedger, item=b.dataset.gotoLedgerItem;
+      state.ledgerFilter={type, item, owner:'all', from:'', to:''};
+      state.activeTab='ledger';
+      saveState(); render();
+    }));
 
     if(state.activeTab==='setup'){
       const addPersonBtn=document.getElementById('add-person-btn');
@@ -2198,6 +2456,17 @@
 
       const allocMonthInp=document.getElementById('alloc-month');
       if(allocMonthInp) allocMonthInp.addEventListener('change', ()=>{ state._editingAllocMonth=allocMonthInp.value; renderTabContent(); });
+      const copyAllocBtn=document.getElementById('copy-alloc-btn');
+      if(copyAllocBtn) copyAllocBtn.addEventListener('click', ()=>{
+        const sel=document.getElementById('copy-alloc-version');
+        const src=state.allocationVersions.find(v=>v.effectiveMonth===sel.value);
+        if(!src){ alert('Choose a version to copy from.'); return; }
+        document.querySelectorAll('[data-pct-person]').forEach(inp=>{
+          const val=src.pct[inp.dataset.pctPerson] && src.pct[inp.dataset.pctPerson][inp.dataset.pctKey];
+          inp.value = val!=null ? val : 0;
+        });
+        updatePctSum();
+      });
       function updatePctSum(){
         const area=document.getElementById('pct-sum-area'); if(!area) return;
         let html='';
