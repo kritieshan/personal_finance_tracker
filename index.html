@@ -374,6 +374,14 @@
 
   function canEdit(personOfEntry){ return session.loggedInAs && session.loggedInAs===personOfEntry; }
   function isLoggedIn(){ return !!session.loggedInAs; }
+  // ledger-row helpers: which record a row traces back to, and whether the signed-in person may touch it
+  const LEDGER_EDIT_TARGET = {income:'entries', expense:'entries', transfer:'entries', assetTx:'networth', liabilityTx:'networth', goalTx:'goals'};
+  function ledgerRowOwner(r){ return r.ownerPerson!=null ? r.ownerPerson : r.person; }
+  function ledgerRowEditable(r){
+    if(!r.rt) return false;
+    if(r.rt==='assetTx' || r.rt==='liabilityTx') return true; // manual balance syncs have no owner, anyone signed in can manage them
+    return canEdit(ledgerRowOwner(r));
+  }
 
   // ---- plan items (categories + goals combined for allocation %) ----
   function planItems(){
@@ -458,8 +466,8 @@
   function assetLedger(assetId){
     let entries=assetTxFor(assetId).map(t=>({id:t.id, date:t.date, kind:t.kind, amount:Number(t.amount), source:'manual', transferId:t.transferId, fromGoalId:t.fromGoalId, fromAssetId:t.fromAssetId, toAssetId:t.toAssetId}));
     // direction is explicit (linkedAssetDirection); legacy entries without it default to the old assumption (expense=contribution, income=withdrawal)
-    state.expenses.filter(e=>e.linkedAssetId===assetId).forEach(e=>entries.push({id:e.id, date:e.date, kind:e.linkedAssetDirection||'contribution', amount:Number(e.amount), source:'expense', desc:e.category+(e.description?': '+e.description:'')}));
-    state.income.filter(e=>e.linkedAssetId===assetId).forEach(e=>entries.push({id:e.id, date:e.date, kind:e.linkedAssetDirection||'withdrawal', amount:Number(e.amount), source:'income', desc:e.source}));
+    state.expenses.filter(e=>e.linkedAssetId===assetId).forEach(e=>entries.push({id:e.id, date:e.date, kind:e.linkedAssetDirection||'contribution', amount:Number(e.amount), source:'expense', desc:e.category+(e.description?': '+e.description:''), person:e.person}));
+    state.income.filter(e=>e.linkedAssetId===assetId).forEach(e=>entries.push({id:e.id, date:e.date, kind:e.linkedAssetDirection||'withdrawal', amount:Number(e.amount), source:'income', desc:e.source, person:e.person}));
     return entries.sort((a,b)=>a.date.localeCompare(b.date));
   }
   function assetValuationDeltas(assetId){
@@ -497,8 +505,8 @@
   function liabilityLedger(liabId){
     let entries=liabilityTxFor(liabId).map(t=>({date:t.date, kind: t.kind==='payment'?'payment':'balance', amount:Number(t.amount), source:'manual', id:t.id}));
     // direction is explicit (linkedLiabilityDirection); legacy entries without it default to the old assumption (expense=payment, income=borrow)
-    state.expenses.filter(e=>e.linkedLiabilityId===liabId).forEach(e=>entries.push({date:e.date, kind:e.linkedLiabilityDirection||'payment', amount:Number(e.amount), source:'expense', id:e.id, desc:e.category+(e.description?': '+e.description:'')}));
-    state.income.filter(e=>e.linkedLiabilityId===liabId).forEach(e=>entries.push({date:e.date, kind:e.linkedLiabilityDirection||'borrow', amount:Number(e.amount), source:'income', id:e.id, desc:e.source}));
+    state.expenses.filter(e=>e.linkedLiabilityId===liabId).forEach(e=>entries.push({date:e.date, kind:e.linkedLiabilityDirection||'payment', amount:Number(e.amount), source:'expense', id:e.id, desc:e.category+(e.description?': '+e.description:''), person:e.person}));
+    state.income.filter(e=>e.linkedLiabilityId===liabId).forEach(e=>entries.push({date:e.date, kind:e.linkedLiabilityDirection||'borrow', amount:Number(e.amount), source:'income', id:e.id, desc:e.source, person:e.person}));
     return entries.sort((a,b)=>a.date.localeCompare(b.date));
   }
   function liabilityBalanceAsOf(liab,dateStr){
@@ -1749,20 +1757,20 @@
       return '';
     };
     let raw=[];
-    state.income.filter(e=>e.account===acct.name).forEach(e=>raw.push({date:e.date,type:'Income',desc:e.source+linkNote(e),person:e.person,base:Number(e.amount)}));
-    state.expenses.filter(e=>e.account===acct.name).forEach(e=>raw.push({date:e.date,type:'Expense',desc:e.category+(e.description?': '+e.description:'')+linkNote(e),person:e.person,base:-Number(e.amount)}));
-    state.transfers.filter(t=>t.fromAccount===acct.name).forEach(t=>raw.push({date:t.date,type:'Transfer out',desc:'To '+t.toAccount+(t.note?' — '+t.note:''),person:t.person,base:-Number(t.amount)}));
-    state.transfers.filter(t=>t.toAccount===acct.name).forEach(t=>raw.push({date:t.date,type:'Transfer in',desc:'From '+t.fromAccount+(t.note?' — '+t.note:''),person:t.person,base:Number(t.amount)}));
-    state.assetTx.filter(t=>t.kind==='contribution'&&t.account===acct.name).forEach(t=>raw.push({date:t.date,type:'Asset purchase',desc:assetName(t.assetId),person:'—',base:-Number(t.amount)}));
-    state.assetTx.filter(t=>t.kind==='withdrawal'&&t.account===acct.name).forEach(t=>raw.push({date:t.date,type:'Asset sale',desc:assetName(t.assetId),person:'—',base:Number(t.amount)}));
-    state.goalTx.filter(t=>(t.type==='contribution'||t.type==='withdrawal') && t.fromAccount===acct.name).forEach(t=>raw.push({date:t.date,type:'Goal '+t.type+' (out)',desc:goalName(t.goalId)+' → '+t.toAccount,person:t.person,base:-Number(t.amount)}));
-    state.goalTx.filter(t=>(t.type==='contribution'||t.type==='withdrawal') && t.toAccount===acct.name).forEach(t=>raw.push({date:t.date,type:'Goal '+t.type+' (in)',desc:goalName(t.goalId)+' ← '+t.fromAccount,person:t.person,base:Number(t.amount)}));
-    state.liabilityTx.filter(t=>t.kind==='payment'&&t.account===acct.name).forEach(t=>raw.push({date:t.date,type:'Liability payment',desc:liabName2(t.liabilityId),person:'—',base:-Number(t.amount)}));
+    state.income.filter(e=>e.account===acct.name).forEach(e=>raw.push({date:e.date,type:'Income',desc:e.source+linkNote(e),person:e.person,base:Number(e.amount),rt:'income',id:e.id}));
+    state.expenses.filter(e=>e.account===acct.name).forEach(e=>raw.push({date:e.date,type:'Expense',desc:e.category+(e.description?': '+e.description:'')+linkNote(e),person:e.person,base:-Number(e.amount),rt:'expense',id:e.id}));
+    state.transfers.filter(t=>t.fromAccount===acct.name).forEach(t=>raw.push({date:t.date,type:'Transfer out',desc:'To '+t.toAccount+(t.note?' — '+t.note:''),person:t.person,base:-Number(t.amount),rt:'transfer',id:t.id}));
+    state.transfers.filter(t=>t.toAccount===acct.name).forEach(t=>raw.push({date:t.date,type:'Transfer in',desc:'From '+t.fromAccount+(t.note?' — '+t.note:''),person:t.person,base:Number(t.amount),rt:'transfer',id:t.id}));
+    state.assetTx.filter(t=>t.kind==='contribution'&&t.account===acct.name).forEach(t=>raw.push({date:t.date,type:'Asset purchase',desc:assetName(t.assetId),person:'—',base:-Number(t.amount),rt:'assetTx',id:t.id}));
+    state.assetTx.filter(t=>t.kind==='withdrawal'&&t.account===acct.name).forEach(t=>raw.push({date:t.date,type:'Asset sale',desc:assetName(t.assetId),person:'—',base:Number(t.amount),rt:'assetTx',id:t.id}));
+    state.goalTx.filter(t=>(t.type==='contribution'||t.type==='withdrawal') && t.fromAccount===acct.name).forEach(t=>raw.push({date:t.date,type:'Goal '+t.type+' (out)',desc:goalName(t.goalId)+' → '+t.toAccount,person:t.person,base:-Number(t.amount),rt:'goalTx',id:t.id}));
+    state.goalTx.filter(t=>(t.type==='contribution'||t.type==='withdrawal') && t.toAccount===acct.name).forEach(t=>raw.push({date:t.date,type:'Goal '+t.type+' (in)',desc:goalName(t.goalId)+' ← '+t.fromAccount,person:t.person,base:Number(t.amount),rt:'goalTx',id:t.id}));
+    state.liabilityTx.filter(t=>t.kind==='payment'&&t.account===acct.name).forEach(t=>raw.push({date:t.date,type:'Liability payment',desc:liabName2(t.liabilityId),person:'—',base:-Number(t.amount),rt:'liabilityTx',id:t.id}));
     raw.sort((a,b)=>a.date.localeCompare(b.date));
-    return raw.map(r=>({date:r.date, type:r.type, desc:r.desc, person:r.person, delta: isLiab? -r.base : r.base}));
+    return raw.map(r=>({date:r.date, type:r.type, desc:r.desc, person:r.person, delta: isLiab? -r.base : r.base, rt:r.rt, id:r.id}));
   }
   function categoryLedgerEntries(category){
-    return state.expenses.filter(e=>e.category===category).map(e=>({date:e.date, type:e.irregular?'Expense (irregular)':'Expense', desc:(e.description||'—')+(e.reason?' — '+e.reason:''), person:e.person, amount:Number(e.amount)})).sort((a,b)=>a.date.localeCompare(b.date));
+    return state.expenses.filter(e=>e.category===category).map(e=>({date:e.date, type:e.irregular?'Expense (irregular)':'Expense', desc:(e.description||'—')+(e.reason?' — '+e.reason:''), person:e.person, amount:Number(e.amount), rt:'expense', id:e.id})).sort((a,b)=>a.date.localeCompare(b.date));
   }
   function goalLedgerEntries(goalId){
     const assetName=id=>{ const a=state.assets.find(x=>x.id===id); return a?a.name:'—'; };
@@ -1771,7 +1779,7 @@
       if(t.type==='transfer') desc='Transfer to asset: '+assetName(t.toAssetId);
       else if(t.fromAccount && t.toAccount) desc=(t.type==='contribution'?'From ':'To ')+(t.type==='contribution'?t.fromAccount:t.toAccount);
       if(t.reason) desc+=' — '+t.reason;
-      return {date:t.date, type:t.type, desc, person:t.person, delta: t.type==='contribution'?Number(t.amount):-Number(t.amount)};
+      return {date:t.date, type:t.type, desc, person:t.person, delta: t.type==='contribution'?Number(t.amount):-Number(t.amount), rt:'goalTx', id:t.id, transferId:t.transferId};
     }).sort((a,b)=>a.date.localeCompare(b.date));
   }
   function buildLedgerData(type,item,ownerFilter,fromDate,toDate){
@@ -1802,7 +1810,7 @@
         else if(t.fromAssetId){ const a2=state.assets.find(x=>x.id===t.fromAssetId); desc+=' (from asset transfer: '+(a2?a2.name:'?')+')'; }
         else if(t.toAssetId){ const a2=state.assets.find(x=>x.id===t.toAssetId); desc+=' (→ '+(a2?a2.name:'?')+')'; }
         let amount = t.kind==='valuation' ? (deltas[t.id]||0) : (t.kind==='withdrawal'?-Number(t.amount):Number(t.amount));
-        return {date:t.date, type:t.kind, desc, person:'—', amount, source:t.source, id:t.id, transferId:t.transferId};
+        return {date:t.date, type:t.kind, desc, person:'—', amount, source:t.source, id:t.id, transferId:t.transferId, rt: t.source==='manual'?'assetTx':t.source, ownerPerson:t.person};
       });
       const trendMonths=monthsBetween(shiftMonth(state.currentMonth,-11), state.currentMonth);
       const trend=trendMonths.map(m=>({label:monthLabel(m), value:assetCurrentValueAsOf(asset.id,m+'-31')}));
@@ -1819,7 +1827,7 @@
         const typeLabel=t.kind==='payment'?'payment':(t.kind==='borrow'?'new borrowing':'balance sync');
         let desc=t.source!=='manual'? ('via '+(t.source==='expense'?'Expense':'Income')+': '+t.desc+' — edit in Entries') : '—';
         const amount = t.kind==='payment'?-Number(t.amount):(t.kind==='borrow'?Number(t.amount):null);
-        return {date:t.date, type:typeLabel, desc, person:'—', amount, balance: amount==null?Number(t.amount):null, source:t.source, id:t.id};
+        return {date:t.date, type:typeLabel, desc, person:'—', amount, balance: amount==null?Number(t.amount):null, source:t.source, id:t.id, rt: t.source==='manual'?'liabilityTx':t.source, ownerPerson:t.person};
       });
       const trendMonths=monthsBetween(shiftMonth(state.currentMonth,-11), state.currentMonth);
       const trend=trendMonths.map(m=>({label:monthLabel(m), value:liabilityBalanceAsOf(liab,m+'-31')}));
@@ -1843,6 +1851,13 @@
       return {title:goal.name, columns:['Date','Type','Description','Person','Amount','Balance'], rows, hasBalance:true, trend, summary:[{label:'Saved so far', value:goalBalance(goal.id)}, {label:'Target', value:goal.targetAmount}]};
     }
     return null;
+  }
+  function ledgerActionsCell(r){
+    if(!r.rt) return '<td class="row-actions no-print"></td>';
+    const editable = ledgerRowEditable(r);
+    const editBtn = r.rt!=='transfer' ? `<button data-ledger-edit="${esc(r.rt)}:${esc(r.id)}" ${editable?'':'disabled'}>Edit</button>` : '';
+    const delBtn = `<button data-ledger-del="${esc(r.rt)}:${esc(r.id)}" data-ledger-transferid="${esc(r.transferId||'')}" ${editable?'':'disabled'}>Delete</button>`;
+    return `<td class="row-actions no-print">${editBtn}${delBtn}</td>`;
   }
   function ledgerHTML(){
     const lf = state.ledgerFilter || {};
@@ -1869,8 +1884,8 @@
       visibleAccounts.forEach(a=>{ accountLedgerEntries(a).forEach(e=>combined.push(Object.assign({account:a.name}, e))); });
       combined = combined.filter(e=> (!fromDate||e.date>=fromDate) && (!toDate||e.date<=toDate) );
       combined.sort((a,b)=>b.date.localeCompare(a.date));
-      body = combined.length? `<table><thead><tr><th>Date</th><th>Account</th><th>Type</th><th>Description</th><th>Person</th><th class="amt">Amount</th></tr></thead><tbody>
-        ${combined.map(e=>`<tr><td>${esc(fmtDate(e.date))}</td><td>${esc(e.account)}</td><td>${esc(e.type)}</td><td>${esc(e.desc)}</td><td>${esc(e.person)}</td><td class="amt" style="color:${e.delta>=0?'var(--good)':'var(--bad)'};">${e.delta>=0?'+':''}${fmtINR(e.delta)}</td></tr>`).join('')}
+      body = combined.length? `<table><thead><tr><th>Date</th><th>Account</th><th>Type</th><th>Description</th><th>Person</th><th class="amt">Amount</th><th class="no-print"></th></tr></thead><tbody>
+        ${combined.map(e=>`<tr><td>${esc(fmtDate(e.date))}</td><td>${esc(e.account)}</td><td>${esc(e.type)}</td><td>${esc(e.desc)}</td><td>${esc(e.person)}</td><td class="amt" style="color:${e.delta>=0?'var(--good)':'var(--bad)'};">${e.delta>=0?'+':''}${fmtINR(e.delta)}</td>${ledgerActionsCell(e)}</tr>`).join('')}
       </tbody></table>` : '<div class="empty">No entries match these filters.</div>';
     } else if(!itemOptions.length){
       body=`<div class="empty">No ${esc(typeFilter)}s yet.</div>`;
@@ -1883,17 +1898,19 @@
           ${data.summary.map(s=>`<div class="stat"><div class="label">${esc(s.label)}</div><div class="value">${fmtINR(s.value)}</div></div>`).join('')}
         </div>
         ${data.trend && data.trend.length>1 ? `<div class="card no-print"><h4>Trend (last 12 months)</h4>${data.investedTrend? lineChartMulti([{label:'Invested',color:'#4b5b66',points:data.investedTrend.map(p=>({label:p.label,value:p.value}))},{label:'Current value',color:'#1f8f5f',points:data.trend.map(p=>({label:p.label,value:p.value}))}]) : lineChart(data.trend,720,140,'#3167ad')}${data.investedTrend?'<div class="legend"><span><i style="background:#4b5b66"></i>Invested</span><span><i style="background:#1f8f5f"></i>Current value</span></div>':''}</div>` : ''}
-        <table><thead><tr>${data.columns.map(c=>`<th${c.toLowerCase().includes('amount')||c.toLowerCase().includes('balance')?' class="amt"':''}>${esc(c)}</th>`).join('')}</tr></thead><tbody>
+        <table><thead><tr>${data.columns.map(c=>`<th${c.toLowerCase().includes('amount')||c.toLowerCase().includes('balance')?' class="amt"':''}>${esc(c)}</th>`).join('')}<th class="no-print"></th></tr></thead><tbody>
           ${data.rows.slice().reverse().map(r=>{
-            if(r.type==='Balance forward') return `<tr><td colspan="${data.columns.length-1}" style="font-style:italic;color:var(--ink-soft);">Balance forward</td><td class="amt"><b>${fmtINR(r.balance)}</b></td></tr>`;
+            if(r.type==='Balance forward') return `<tr><td colspan="${data.columns.length-1}" style="font-style:italic;color:var(--ink-soft);">Balance forward</td><td class="amt"><b>${fmtINR(r.balance)}</b></td><td class="no-print"></td></tr>`;
             const cells=[esc(fmtDate(r.date)), esc(r.type), esc(r.desc||'—')];
             if(data.columns.includes('Person')) cells.push(esc(r.person||'—'));
             let amtHtml;
             if(r.amount!=null){ amtHtml=`<td class="amt" style="color:${r.amount>=0?'var(--good)':'var(--bad)'};">${r.amount>=0&&data.hasBalance?'+':''}${fmtINR(r.amount)}</td>`; }
             else if(r.delta!=null){ amtHtml=`<td class="amt" style="color:${r.delta>=0?'var(--good)':'var(--bad)'};">${r.delta>=0?'+':''}${fmtINR(r.delta)}</td>`; }
+            else if(!data.hasBalance && r.balance!=null){ amtHtml=`<td class="amt">${fmtINR(r.balance)}</td>`; }
             else { amtHtml='<td class="amt">—</td>'; }
             let html=`<tr>${cells.map(c=>`<td>${c}</td>`).join('')}${amtHtml}`;
             if(data.hasBalance && r.balance!=null) html+=`<td class="amt"><b>${fmtINR(r.balance)}</b></td>`;
+            html+=ledgerActionsCell(r);
             html+='</tr>';
             return html;
           }).join('')}
@@ -2418,6 +2435,23 @@
       });
       const exportPdfBtn=document.getElementById('ledger-export-pdf');
       if(exportPdfBtn) exportPdfBtn.addEventListener('click', ()=>window.print());
+      document.querySelectorAll('[data-ledger-edit]').forEach(b=>b.addEventListener('click', ()=>{
+        const v=b.dataset.ledgerEdit, i=v.indexOf(':'), rt=v.slice(0,i), id=v.slice(i+1);
+        state._editRow=id;
+        state.activeTab=LEDGER_EDIT_TARGET[rt]||'ledger';
+        saveState(); renderTabContent();
+      }));
+      document.querySelectorAll('[data-ledger-del]').forEach(b=>b.addEventListener('click', async()=>{
+        const v=b.dataset.ledgerDel, i=v.indexOf(':'), rt=v.slice(0,i), id=v.slice(i+1);
+        const transferId=b.dataset.ledgerTransferid;
+        if(rt==='income'){ const row=state.income.find(r=>r.id===id); if(!row||!canEdit(row.person)) return; state.income=state.income.filter(r=>r.id!==id); }
+        else if(rt==='expense'){ const row=state.expenses.find(r=>r.id===id); if(!row||!canEdit(row.person)) return; state.expenses=state.expenses.filter(r=>r.id!==id); }
+        else if(rt==='transfer'){ const row=state.transfers.find(r=>r.id===id); if(!row||!canEdit(row.person)) return; state.transfers=state.transfers.filter(r=>r.id!==id); }
+        else if(rt==='assetTx'){ if(transferId){ deleteLinkedTransfer(transferId); } else { state.assetTx=state.assetTx.filter(t=>t.id!==id); } }
+        else if(rt==='liabilityTx'){ state.liabilityTx=state.liabilityTx.filter(t=>t.id!==id); }
+        else if(rt==='goalTx'){ const row=state.goalTx.find(t=>t.id===id); if(!row||!canEdit(row.person)) return; if(transferId){ deleteLinkedTransfer(transferId); } else { state.goalTx=state.goalTx.filter(t=>t.id!==id); } }
+        await saveState(); renderTabContent();
+      }));
     }
     document.querySelectorAll('[data-goto-ledger]').forEach(b=>b.addEventListener('click', ()=>{
       const type=b.dataset.gotoLedger, item=b.dataset.gotoLedgerItem;
